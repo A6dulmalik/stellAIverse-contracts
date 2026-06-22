@@ -37,6 +37,14 @@ pub enum ContractError {
     SameAddressTransfer = 36,
     NotFound = 37,
     AlreadyExists = 38,
+    CreditScoreTooLow = 39,
+    PaymentPlanNotFound = 40,
+    PaymentPlanExpired = 41,
+    PaymentAlreadyMade = 42,
+    InvalidPaymentPlanAmount = 43,
+    LoanInDefault = 44,
+    LoanAlreadyDefaulted = 45,
+    InsufficientCollateral = 46,
 }
 
 pub fn error_description(error: ContractError) -> &'static str {
@@ -72,5 +80,13 @@ pub fn error_description(error: ContractError) -> &'static str {
         ContractError::SameAddressTransfer => "Transfer to same address",
         ContractError::NotFound => "Resource not found",
         ContractError::AlreadyExists => "Resource already exists",
+        ContractError::CreditScoreTooLow => "Credit score too low for financing",
+        ContractError::PaymentPlanNotFound => "Payment plan not found",
+        ContractError::PaymentPlanExpired => "Payment plan has expired",
+        ContractError::PaymentAlreadyMade => "Payment already made for this period",
+        ContractError::InvalidPaymentPlanAmount => "Invalid payment plan amount",
+        ContractError::LoanInDefault => "Loan is in default",
+        ContractError::LoanAlreadyDefaulted => "Loan has already been defaulted",
+        ContractError::InsufficientCollateral => "Insufficient collateral for financing",
     }
 }
