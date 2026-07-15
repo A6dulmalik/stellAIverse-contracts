@@ -45,6 +45,11 @@ pub enum ContractError {
     LoanInDefault = 44,
     LoanAlreadyDefaulted = 45,
     InsufficientCollateral = 46,
+    // AMM integration errors (Issue #245)
+    AmmNotConfigured = 50,
+    TokenNotAccepted = 51,
+    InsufficientSwapOutput = 52,
+    SwapFailed = 53,
 }
 
 pub fn error_description(error: ContractError) -> &'static str {
@@ -88,5 +93,9 @@ pub fn error_description(error: ContractError) -> &'static str {
         ContractError::LoanInDefault => "Loan is in default",
         ContractError::LoanAlreadyDefaulted => "Loan has already been defaulted",
         ContractError::InsufficientCollateral => "Insufficient collateral for financing",
+        ContractError::AmmNotConfigured => "AMM contract not configured",
+        ContractError::TokenNotAccepted => "Payment token not in accepted list",
+        ContractError::InsufficientSwapOutput => "AMM swap output below required amount",
+        ContractError::SwapFailed => "AMM swap failed",
     }
 }

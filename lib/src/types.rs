@@ -105,7 +105,8 @@ pub struct AnomalyScore {
 #[contracttype]
 pub struct Listing {
     pub listing_id: u64,
-    pub agent_id: u64,
+    pub asset_id: u64,
+    pub asset_type: AssetType,
     pub seller: Address,
     pub price: i128,
     pub listing_type: ListingType,
@@ -113,13 +114,65 @@ pub struct Listing {
     pub created_at: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Listing types supported by the marketplace
 #[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ListingType {
     Sale = 0,
     Lease = 1,
     Auction = 2,
+}
+
+/// Represents prediction market outcome
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PredictionOutcome {
+    Yes = 0,
+    No = 1,
+    Invalid = 2,
+}
+
+/// Represents a prediction market
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct PredictionMarket {
+    pub market_id: u64,
+    pub question: String,
+    pub category: String,
+    pub end_timestamp: u64,
+    pub resolved: bool,
+    pub outcome: PredictionOutcome, // Uses PredictionOutcome::Invalid for unresolved markets
+    pub total_shares_yes: u128,
+    pub total_shares_no: u128,
+    pub oracle_address: Address,
+    pub created_at: u64,
+    pub creator: Address,
+}
+
+/// Represents a user's shares in a prediction market
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct PredictionShares {
+    pub shares_id: u64,
+    pub market_id: u64,
+    pub owner: Address,
+    pub shares_yes: u128,
+    pub shares_no: u128,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub escrow_locked: bool,
+    pub escrow_holder: Option<Address>,
+}
+
+/// Asset types supported by the marketplace
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AssetType {
+    Agent = 0,
+    PredictionShares = 1,
 }
 
 /// Represents an evolution/upgrade request
@@ -233,13 +286,38 @@ pub enum OptionalRoyaltyConfig {
     Some(RoyaltyConfig),
 }
 
-#[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
 #[repr(u32)]
 pub enum AuctionType {
     English = 0,
     Dutch = 1,
     Sealed = 2,
+}
+
+/// Represents a dispute for a marketplace transaction
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct Dispute {
+    pub dispute_id: u64,
+    pub listing_id: u64,
+    pub asset_type: AssetType,
+    pub initiator: Address,
+    pub reason: String,
+    pub evidence_cid: Option<String>,
+    pub status: DisputeStatus,
+    pub created_at: u64,
+    pub resolved_at: Option<u64>,
+}
+
+/// Status of a dispute
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+#[repr(u32)]
+pub enum DisputeStatus {
+    Open = 0,
+    Resolved = 1,
+    Rejected = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -760,6 +838,129 @@ pub enum CredentialType {
     AgeVerification = 8,
     AddressVerification = 9,
     IdentityVerification = 10,
+}
+
+// ── Workflow Orchestration Types ───────────────────────────────────────────
+
+/// Overall status of an execution-hub workflow
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[contracttype]
+#[repr(u32)]
+pub enum WorkflowStatus {
+    /// Workflow has been created but not yet started
+    Pending = 0,
+    /// One or more steps are currently executing
+    Running = 1,
+    /// All steps completed successfully
+    Completed = 2,
+    /// A step failed and rollback succeeded
+    RolledBack = 3,
+    /// A step failed and rollback itself also failed
+    Failed = 4,
+    /// Workflow was cancelled before completion
+    Cancelled = 5,
+}
+
+/// Status of an individual workflow step
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[contracttype]
+#[repr(u32)]
+pub enum WorkflowStepStatus {
+    Pending = 0,
+    Executing = 1,
+    Completed = 2,
+    Failed = 3,
+    RolledBack = 4,
+    Skipped = 5,
+}
+
+/// A single step within a cross-contract workflow
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct WorkflowStep {
+    /// 0-based index of this step in the workflow
+    pub step_index: u32,
+    /// Human-readable name, e.g. "lock_escrow"
+    pub name: String,
+    /// Contract address to call
+    pub target_contract: Address,
+    /// Name of the function to invoke on `target_contract` (stored as String; converted to Symbol at call time)
+    pub function_name: String,
+    /// Serialised arguments (ABI-encoded by the caller)
+    pub encoded_args: Bytes,
+    /// If true this step must complete before any later step can run
+    pub required: bool,
+    /// Maximum number of automatic retries on transient failure (0 = no retry)
+    pub max_retries: u32,
+    /// How many retries have been attempted so far
+    pub retry_count: u32,
+    /// Step execution status
+    pub status: WorkflowStepStatus,
+    /// Serialised result returned by the target contract (may be empty)
+    pub result: Option<Bytes>,
+    /// Error message when status is Failed
+    pub error: Option<String>,
+    /// Ledger timestamp when this step was last updated
+    pub updated_at: u64,
+}
+
+/// Callback registration so external contracts learn when a workflow finishes.
+/// The hub always calls `wf_done(workflow_id, status)` on `callback_contract`.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct WorkflowCallback {
+    /// Contract to notify on workflow completion or failure
+    pub callback_contract: Address,
+    /// Whether the callback has already been fired
+    pub fired: bool,
+}
+
+/// Wrapper enum so Option<WorkflowCallback> works inside contracttype structs
+#[derive(Clone, Debug)]
+#[contracttype]
+pub enum OptionalWorkflowCallback {
+    None,
+    Some(WorkflowCallback),
+}
+
+/// A complete workflow instance managed by the execution hub
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct WorkflowInstance {
+    pub workflow_id: u64,
+    /// Address that initiated the workflow (e.g. the marketplace contract)
+    pub initiator: Address,
+    /// Human-readable workflow name
+    pub name: String,
+    pub steps: Vec<WorkflowStep>,
+    pub status: WorkflowStatus,
+    /// Index of the step currently being executed (or last attempted)
+    pub current_step: u32,
+    /// Number of steps that completed successfully
+    pub completed_steps: u32,
+    pub created_at: u64,
+    pub updated_at: u64,
+    /// Deadline after which the workflow is considered timed-out
+    pub deadline: u64,
+    /// Optional metadata tag for off-chain indexing (e.g. listing ID)
+    pub context_tag: Option<String>,
+    /// Registered callback (fired once on terminal status)
+    pub callback: OptionalWorkflowCallback,
+    /// Human-readable failure summary
+    pub failure_reason: Option<String>,
+    /// Number of steps that were rolled back after a failure
+    pub rolled_back_steps: u32,
+}
+
+/// Compact summary stored in the per-initiator history index
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct WorkflowSummary {
+    pub workflow_id: u64,
+    pub name: String,
+    pub status: WorkflowStatus,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
 }
 
 /// Compliance integration types
