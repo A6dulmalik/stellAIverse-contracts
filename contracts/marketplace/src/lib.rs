@@ -817,6 +817,7 @@ impl Marketplace {
         let end_time = current_time + (duration_days * 24 * 60 * 60);
         let min_increment = min_bid_increment_bps.unwrap_or(MIN_BID_INCREMENT_BPS);
 
+        #[allow(clippy::manual_range_contains)]
         if min_increment < 10 || min_increment > 10000 {
             panic!("Invalid bid increment (must be 0.1% to 100%)");
         }
@@ -1079,7 +1080,7 @@ impl Marketplace {
             bidder,
             amount,
             timestamp,
-            bid_increment: if bids.len() > 0 {
+            bid_increment: if !bids.is_empty() {
                 let prev_bid = bids.last().unwrap();
                 amount - prev_bid.amount
             } else {
@@ -1109,7 +1110,7 @@ impl Marketplace {
         if listing_id == 0 {
             panic!("Invalid listing ID");
         }
-        if reason.len() == 0 || reason.len() > 1024 {
+        if reason.is_empty() || reason.len() > 1024 {
             panic!("Invalid dispute reason length");
         }
 
@@ -1203,6 +1204,7 @@ impl Marketplace {
     // =========================================================================
 
     /// Record a transaction in the history
+    #[allow(clippy::too_many_arguments)]
     fn record_transaction(
         env: &Env,
         listing_id: u64,
