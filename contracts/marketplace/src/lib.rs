@@ -817,6 +817,7 @@ impl Marketplace {
         let end_time = current_time + (duration_days * 24 * 60 * 60);
         let min_increment = min_bid_increment_bps.unwrap_or(MIN_BID_INCREMENT_BPS);
 
+        #[allow(clippy::manual_range_contains)]
         if min_increment < 10 || min_increment > 10000 {
             panic!("Invalid bid increment (must be 0.1% to 100%)");
         }
@@ -1079,7 +1080,7 @@ impl Marketplace {
             bidder,
             amount,
             timestamp,
-            bid_increment: if bids.len() > 0 {
+            bid_increment: if !bids.is_empty() {
                 let prev_bid = bids.last().unwrap();
                 amount - prev_bid.amount
             } else {
@@ -1109,7 +1110,7 @@ impl Marketplace {
         if listing_id == 0 {
             panic!("Invalid listing ID");
         }
-        if reason.len() == 0 || reason.len() > 1024 {
+        if reason.is_empty() || reason.len() > 1024 {
             panic!("Invalid dispute reason length");
         }
 
@@ -1185,7 +1186,6 @@ impl Marketplace {
     /// Get all active disputes in the queue
     pub fn get_active_disputes(env: Env, dispute_ids: Vec<u64>) -> Vec<stellai_lib::Dispute> {
         let mut active_disputes = Vec::new(&env);
-        let current_time = env.ledger().timestamp();
 
         for i in 0..dispute_ids.len() {
             if let Some(dispute_id) = dispute_ids.get(i) {
@@ -1204,6 +1204,7 @@ impl Marketplace {
     // =========================================================================
 
     /// Record a transaction in the history
+    #[allow(clippy::too_many_arguments)]
     fn record_transaction(
         env: &Env,
         listing_id: u64,
@@ -1215,7 +1216,6 @@ impl Marketplace {
         platform_fee: i128,
         txn_type: String,
     ) -> u64 {
-        static mut TXN_CTR: u64 = 0;
         let key = Symbol::new(env, "txn_ctr");
         let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
         let txn_id = current + 1;
@@ -1268,15 +1268,13 @@ impl Marketplace {
     pub fn get_platform_analytics(
         env: Env,
         admin: Address,
-        start_time: u64,
-        end_time: u64,
     ) -> (i128, i128, u64) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
 
-        let mut total_volume: i128 = 0;
-        let mut total_fees: i128 = 0;
-        let mut txn_count: u64 = 0;
+        let total_volume: i128 = 0;
+        let total_fees: i128 = 0;
+        let txn_count: u64 = 0;
 
         // This would typically iterate through a range of transactions
         // For simplicity, this is a placeholder for the analytics calculation
@@ -1819,6 +1817,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 1u64);
@@ -1880,6 +1879,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 2u64);
@@ -1947,6 +1947,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 3u64);
@@ -2026,6 +2027,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 10u64);
@@ -2079,6 +2081,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
@@ -2112,6 +2115,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
