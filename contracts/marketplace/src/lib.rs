@@ -1265,10 +1265,7 @@ impl Marketplace {
     }
 
     /// Get platform analytics (volume, fees, etc.) - admin only
-    pub fn get_platform_analytics(
-        env: Env,
-        admin: Address,
-    ) -> (i128, i128, u64) {
+    pub fn get_platform_analytics(env: Env, admin: Address) -> (i128, i128, u64) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
 
