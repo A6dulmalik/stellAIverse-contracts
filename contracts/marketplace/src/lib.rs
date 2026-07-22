@@ -116,7 +116,9 @@ impl Marketplace {
             min_fee: None,
             max_fee: None,
         };
-        env.storage().instance().set(&Symbol::new(&env, PLATFORM_FEE_KEY), &default_fee);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PLATFORM_FEE_KEY), &default_fee);
     }
 
     pub fn set_agent_nft_contract(env: Env, admin: Address, agent_nft: Address) {
@@ -563,13 +565,13 @@ impl Marketplace {
     // =========================================================================
     // Auto-expire listings
     // =========================================================================
-    
+
     /// Check and expire any listings that have passed their expiration date
     pub fn cleanup_expired_listings(env: Env, listing_ids: Vec<u64>) -> Vec<u64> {
         let current_time = env.ledger().timestamp();
         let mut expired_listings = Vec::new(&env);
         let marketplace = env.current_contract_address();
-        
+
         for i in 0..listing_ids.len() {
             if let Some(listing_id) = listing_ids.get(i) {
                 if let Ok(mut listing) = Self::try_load_listing(&env, listing_id) {
@@ -578,7 +580,7 @@ impl Marketplace {
                         listing.active = false;
                         let lk = Self::listing_key(&env, listing_id);
                         env.storage().instance().set(&lk, &listing);
-                        
+
                         // Release escrow
                         let mut agent = Self::load_agent(&env, listing.asset_id);
                         if agent.escrow_locked {
@@ -587,13 +589,14 @@ impl Marketplace {
                                     agent.escrow_locked = false;
                                     agent.escrow_holder = None;
                                     agent.updated_at = current_time;
-                                    agent.nonce = agent.nonce.checked_add(1).expect("Nonce overflow");
+                                    agent.nonce =
+                                        agent.nonce.checked_add(1).expect("Nonce overflow");
                                     Self::save_agent(&env, listing.asset_id, &agent);
                                 }
                                 _ => {}
                             }
                         }
-                        
+
                         expired_listings.push_back(listing_id);
                         env.events().publish(
                             (symbol_short!("lst_exp"),),
@@ -661,7 +664,7 @@ impl Marketplace {
         duration_days: Option<u64>,
     ) -> u64 {
         offerer.require_auth();
-        
+
         if listing_id == 0 {
             panic!("Invalid listing ID");
         }
@@ -709,12 +712,13 @@ impl Marketplace {
     /// Accept an offer (only seller can accept)
     pub fn accept_offer(env: Env, offer_id: u64, seller: Address) -> (u64, u64) {
         seller.require_auth();
-        
+
         if offer_id == 0 {
             panic!("Invalid offer ID");
         }
 
-        let mut offer: Offer = env.storage()
+        let mut offer: Offer = env
+            .storage()
             .instance()
             .get(&Self::offer_key(&env, offer_id))
             .expect("Offer not found");
@@ -736,7 +740,9 @@ impl Marketplace {
 
         // Mark offer as inactive
         offer.active = false;
-        env.storage().instance().set(&Self::offer_key(&env, offer_id), &offer);
+        env.storage()
+            .instance()
+            .set(&Self::offer_key(&env, offer_id), &offer);
 
         // Start the purchase workflow
         Self::buy_agent(env, offer.listing_id, offer.offerer, offer.amount)
@@ -745,8 +751,9 @@ impl Marketplace {
     /// Reject an offer
     pub fn reject_offer(env: Env, offer_id: u64, caller: Address) {
         caller.require_auth();
-        
-        let mut offer: Offer = env.storage()
+
+        let mut offer: Offer = env
+            .storage()
             .instance()
             .get(&Self::offer_key(&env, offer_id))
             .expect("Offer not found");
@@ -758,7 +765,9 @@ impl Marketplace {
 
         if offer.active {
             offer.active = false;
-            env.storage().instance().set(&Self::offer_key(&env, offer_id), &offer);
+            env.storage()
+                .instance()
+                .set(&Self::offer_key(&env, offer_id), &offer);
             env.events().publish(
                 (symbol_short!("ofr_rjct"),),
                 (offer_id, caller, env.ledger().timestamp()),
@@ -781,7 +790,7 @@ impl Marketplace {
         min_bid_increment_bps: Option<u32>,
     ) -> u64 {
         seller.require_auth();
-        
+
         if agent_id == 0 {
             panic!("Invalid agent ID");
         }
@@ -852,7 +861,7 @@ impl Marketplace {
     /// Place a bid on an active auction
     pub fn place_bid(env: Env, auction_id: u64, bidder: Address, bid_amount: i128) {
         bidder.require_auth();
-        
+
         if auction_id == 0 {
             panic!("Invalid auction ID");
         }
@@ -860,7 +869,8 @@ impl Marketplace {
             panic!("Bid amount must be positive");
         }
 
-        let mut auction: stellai_lib::Auction = env.storage()
+        let mut auction: stellai_lib::Auction = env
+            .storage()
             .instance()
             .get(&Self::auction_key(&env, auction_id))
             .expect("Auction not found");
@@ -877,7 +887,8 @@ impl Marketplace {
         let min_bid = if auction.highest_bid == 0 {
             auction.start_price
         } else {
-            let min_increment = (auction.highest_bid * (auction.min_bid_increment_bps as i128)) / 10000;
+            let min_increment =
+                (auction.highest_bid * (auction.min_bid_increment_bps as i128)) / 10000;
             auction.highest_bid + min_increment
         };
 
@@ -894,12 +905,15 @@ impl Marketplace {
         }
 
         // Record the new bid
-        let bid_sequence = Self::record_bid(&env, auction_id, bidder.clone(), bid_amount, current_time);
-        
+        let bid_sequence =
+            Self::record_bid(&env, auction_id, bidder.clone(), bid_amount, current_time);
+
         auction.highest_bidder = Some(bidder.clone());
         auction.highest_bid = bid_amount;
         auction.current_price = bid_amount;
-        env.storage().instance().set(&Self::auction_key(&env, auction_id), &auction);
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
 
         env.events().publish(
             (symbol_short!("bid_plcd"),),
@@ -913,7 +927,8 @@ impl Marketplace {
             panic!("Invalid auction ID");
         }
 
-        let mut auction: stellai_lib::Auction = env.storage()
+        let mut auction: stellai_lib::Auction = env
+            .storage()
             .instance()
             .get(&Self::auction_key(&env, auction_id))
             .expect("Auction not found");
@@ -930,35 +945,47 @@ impl Marketplace {
         if auction.highest_bid >= auction.reserve_price {
             // Auction was successful - highest bidder wins
             auction.status = stellai_lib::AuctionStatus::Won;
-            
+
             if let Some(ref buyer) = auction.highest_bidder {
                 // Process the sale - transfer ownership and distribute funds
                 Self::process_auction_sale(&env, &auction, buyer.clone());
             }
-            
+
             env.events().publish(
                 (symbol_short!("auc_won"),),
-                (auction_id, auction.highest_bidder.clone(), auction.highest_bid, current_time),
+                (
+                    auction_id,
+                    auction.highest_bidder.clone(),
+                    auction.highest_bid,
+                    current_time,
+                ),
             );
         } else {
             // Reserve not met - cancel auction, return asset to seller
             auction.status = stellai_lib::AuctionStatus::Ended;
             Self::cancel_auction_asset_return(&env, &auction);
-            
+
             env.events().publish(
                 (symbol_short!("auc_exp"),),
-                (auction_id, auction.reserve_price, auction.highest_bid, current_time),
+                (
+                    auction_id,
+                    auction.reserve_price,
+                    auction.highest_bid,
+                    current_time,
+                ),
             );
         }
 
-        env.storage().instance().set(&Self::auction_key(&env, auction_id), &auction);
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
     }
 
     /// Cancel an auction and return the asset to the seller
     fn cancel_auction_asset_return(env: &Env, auction: &stellai_lib::Auction) {
         let marketplace = env.current_contract_address();
         let mut agent = Self::load_agent(env, auction.agent_id);
-        
+
         if agent.escrow_locked {
             match &agent.escrow_holder {
                 Some(h) if h == &marketplace => {
@@ -975,7 +1002,7 @@ impl Marketplace {
     /// Process a successful auction sale
     fn process_auction_sale(env: &Env, auction: &stellai_lib::Auction, buyer: Address) {
         let mut agent = Self::load_agent(env, auction.agent_id);
-        
+
         // Transfer ownership to the winning bidder
         agent.owner = buyer.clone();
         agent.escrow_locked = false;
@@ -986,8 +1013,10 @@ impl Marketplace {
 
         // Calculate royalties and platform fees
         let royalty_key = Self::royalty_key(env, auction.agent_id);
-        let royalty_info: Option<stellai_lib::RoyaltyInfo> = env.storage().instance().get(&royalty_key);
-        let platform_fee_config: PlatformFeeConfig = env.storage()
+        let royalty_info: Option<stellai_lib::RoyaltyInfo> =
+            env.storage().instance().get(&royalty_key);
+        let platform_fee_config: PlatformFeeConfig = env
+            .storage()
             .instance()
             .get(&Symbol::new(env, PLATFORM_FEE_KEY))
             .expect("Platform fee not configured");
@@ -1030,13 +1059,20 @@ impl Marketplace {
     }
 
     /// Record a bid for historical tracking
-    fn record_bid(env: &Env, auction_id: u64, bidder: Address, amount: i128, timestamp: u64) -> u64 {
+    fn record_bid(
+        env: &Env,
+        auction_id: u64,
+        bidder: Address,
+        amount: i128,
+        timestamp: u64,
+    ) -> u64 {
         let bid_key = (String::from_str(env, BID_RECORD_PREFIX), auction_id);
-        let bids: Vec<stellai_lib::BidRecord> = env.storage()
+        let bids: Vec<stellai_lib::BidRecord> = env
+            .storage()
             .instance()
             .get(&bid_key)
             .unwrap_or_else(|| Vec::new(env));
-        
+
         let sequence = (bids.len() as u64) + 1;
         let mut new_bids = bids.clone();
         new_bids.push_back(stellai_lib::BidRecord {
@@ -1069,7 +1105,7 @@ impl Marketplace {
         evidence_cid: Option<String>,
     ) -> u64 {
         initiator.require_auth();
-        
+
         if listing_id == 0 {
             panic!("Invalid listing ID");
         }
@@ -1118,7 +1154,8 @@ impl Marketplace {
             panic!("Invalid dispute ID");
         }
 
-        let mut dispute: stellai_lib::Dispute = env.storage()
+        let mut dispute: stellai_lib::Dispute = env
+            .storage()
             .instance()
             .get(&Self::dispute_key(&env, dispute_id))
             .expect("Dispute not found");
@@ -1135,7 +1172,9 @@ impl Marketplace {
             stellai_lib::DisputeStatus::Rejected
         };
 
-        env.storage().instance().set(&Self::dispute_key(&env, dispute_id), &dispute);
+        env.storage()
+            .instance()
+            .set(&Self::dispute_key(&env, dispute_id), &dispute);
 
         env.events().publish(
             (symbol_short!("dsp_res"),),
@@ -1146,7 +1185,6 @@ impl Marketplace {
     /// Get all active disputes in the queue
     pub fn get_active_disputes(env: Env, dispute_ids: Vec<u64>) -> Vec<stellai_lib::Dispute> {
         let mut active_disputes = Vec::new(&env);
-        let current_time = env.ledger().timestamp();
 
         for i in 0..dispute_ids.len() {
             if let Some(dispute_id) = dispute_ids.get(i) {
@@ -1176,7 +1214,6 @@ impl Marketplace {
         platform_fee: i128,
         txn_type: String,
     ) -> u64 {
-        static mut TXN_CTR: u64 = 0;
         let key = Symbol::new(env, "txn_ctr");
         let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
         let txn_id = current + 1;
@@ -1202,12 +1239,20 @@ impl Marketplace {
     }
 
     /// Get transaction history for a user (buyer or seller)
-    pub fn get_user_transactions(env: Env, user: Address, txn_ids: Vec<u64>) -> Vec<TransactionRecord> {
+    pub fn get_user_transactions(
+        env: Env,
+        user: Address,
+        txn_ids: Vec<u64>,
+    ) -> Vec<TransactionRecord> {
         let mut user_txns = Vec::new(&env);
 
         for i in 0..txn_ids.len() {
             if let Some(txn_id) = txn_ids.get(i) {
-                if let Some(record) = env.storage().instance().get::<_, TransactionRecord>(&Self::transaction_key(&env, txn_id)) {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<_, TransactionRecord>(&Self::transaction_key(&env, txn_id))
+                {
                     if record.seller == user || record.buyer == user {
                         user_txns.push_back(record);
                     }
@@ -1218,13 +1263,13 @@ impl Marketplace {
     }
 
     /// Get platform analytics (volume, fees, etc.) - admin only
-    pub fn get_platform_analytics(env: Env, admin: Address, start_time: u64, end_time: u64) -> (i128, i128, u64) {
+    pub fn get_platform_analytics(env: Env, admin: Address) -> (i128, i128, u64) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
 
-        let mut total_volume: i128 = 0;
-        let mut total_fees: i128 = 0;
-        let mut txn_count: u64 = 0;
+        let total_volume: i128 = 0;
+        let total_fees: i128 = 0;
+        let txn_count: u64 = 0;
 
         // This would typically iterate through a range of transactions
         // For simplicity, this is a placeholder for the analytics calculation
@@ -1245,15 +1290,18 @@ impl Marketplace {
             panic!("Platform fee cannot exceed 10%");
         }
 
-        let mut config: PlatformFeeConfig = env.storage()
+        let mut config: PlatformFeeConfig = env
+            .storage()
             .instance()
             .get(&Symbol::new(&env, PLATFORM_FEE_KEY))
             .expect("Platform fee config not found");
-        
+
         config.fee_bps = fee_bps;
         config.recipient = recipient.clone();
-        
-        env.storage().instance().set(&Symbol::new(&env, PLATFORM_FEE_KEY), &config);
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PLATFORM_FEE_KEY), &config);
 
         env.events().publish(
             (symbol_short!("fee_upd"),),
@@ -1764,6 +1812,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 1u64);
@@ -1825,6 +1874,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 2u64);
@@ -1892,6 +1942,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 3u64);
@@ -1971,6 +2022,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 10u64);
@@ -2024,6 +2076,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
@@ -2057,6 +2110,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
