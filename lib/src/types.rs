@@ -112,6 +112,7 @@ pub struct Listing {
     pub listing_type: ListingType,
     pub active: bool,
     pub created_at: u64,
+    pub expires_at: u64,
 }
 
 /// Listing types supported by the marketplace

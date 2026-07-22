@@ -16,6 +16,18 @@ const AGENT_NFT_KEY: &str = "agent_nft";
 const HUB_KEY: &str = "exec_hub";
 const PENDING_SALE_PREFIX: &str = "psale_";
 const WF_LISTING_PREFIX: &str = "wf_lst_";
+// New storage keys for extended features
+const AUCTION_CTR_KEY: &str = "auc_ctr";
+const AUCTION_PREFIX: &str = "auc_";
+const BID_RECORD_PREFIX: &str = "bid_";
+const OFFER_CTR_KEY: &str = "ofr_ctr";
+const OFFER_PREFIX: &str = "ofr_";
+const DISPUTE_CTR_KEY: &str = "dsp_ctr";
+const DISPUTE_PREFIX: &str = "dsp_";
+const TRANSACTION_HISTORY_PREFIX: &str = "txn_";
+const PLATFORM_FEE_KEY: &str = "plat_fee";
+const DEFAULT_LISTING_DURATION: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
+const MIN_BID_INCREMENT_BPS: u32 = 100; // 1% minimum bid increment
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
@@ -29,6 +41,42 @@ pub struct PendingSale {
     pub agent_id: u64,
     pub workflow_id: u64,
     pub created_at: u64,
+}
+
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct Offer {
+    pub offer_id: u64,
+    pub listing_id: u64,
+    pub offerer: Address,
+    pub amount: i128,
+    pub active: bool,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct TransactionRecord {
+    pub txn_id: u64,
+    pub listing_id: u64,
+    pub asset_id: u64,
+    pub seller: Address,
+    pub buyer: Address,
+    pub amount: i128,
+    pub royalty_amount: i128,
+    pub platform_fee: i128,
+    pub timestamp: u64,
+    pub txn_type: String, // "sale", "auction_won", "offer_accepted"
+}
+
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct PlatformFeeConfig {
+    pub fee_bps: u32,
+    pub recipient: Address,
+    pub min_fee: Option<i128>,
+    pub max_fee: Option<i128>,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -52,6 +100,25 @@ impl Marketplace {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, LISTING_CTR_KEY), &0u64);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, AUCTION_CTR_KEY), &0u64);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, OFFER_CTR_KEY), &0u64);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, DISPUTE_CTR_KEY), &0u64);
+        // Initialize default platform fee: 2.5%
+        let default_fee = PlatformFeeConfig {
+            fee_bps: 250,
+            recipient: admin.clone(),
+            min_fee: None,
+            max_fee: None,
+        };
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PLATFORM_FEE_KEY), &default_fee);
     }
 
     pub fn set_agent_nft_contract(env: Env, admin: Address, agent_nft: Address) {
@@ -112,20 +179,31 @@ impl Marketplace {
         let listing_id = Self::next_listing_id(&env);
         let marketplace = env.current_contract_address();
 
+        // Calculate expiration time
+        let current_time = env.ledger().timestamp();
+        let expires_at = if let Some(days) = duration_days {
+            current_time + (days * 24 * 60 * 60)
+        } else {
+            current_time + DEFAULT_LISTING_DURATION
+        };
+
+        let listing_type_enum = match listing_type {
+            0 => stellai_lib::ListingType::Sale,
+            1 => stellai_lib::ListingType::Lease,
+            2 => stellai_lib::ListingType::Auction,
+            _ => panic!("Invalid listing type"),
+        };
+
         let listing = stellai_lib::Listing {
             listing_id,
             asset_id: agent_id,
             asset_type: stellai_lib::AssetType::Agent,
             seller: seller.clone(),
             price,
-            listing_type: match listing_type {
-                0 => stellai_lib::ListingType::Sale,
-                1 => stellai_lib::ListingType::Lease,
-                2 => stellai_lib::ListingType::Auction,
-                _ => panic!("Invalid listing type"),
-            },
+            listing_type: listing_type_enum,
             active: true,
-            created_at: env.ledger().timestamp(),
+            created_at: current_time,
+            expires_at,
         };
 
         let lk = Self::listing_key(&env, listing_id);
@@ -485,6 +563,53 @@ impl Marketplace {
     }
 
     // =========================================================================
+    // Auto-expire listings
+    // =========================================================================
+
+    /// Check and expire any listings that have passed their expiration date
+    pub fn cleanup_expired_listings(env: Env, listing_ids: Vec<u64>) -> Vec<u64> {
+        let current_time = env.ledger().timestamp();
+        let mut expired_listings = Vec::new(&env);
+        let marketplace = env.current_contract_address();
+
+        for i in 0..listing_ids.len() {
+            if let Some(listing_id) = listing_ids.get(i) {
+                if let Ok(mut listing) = Self::try_load_listing(&env, listing_id) {
+                    if listing.active && listing.expires_at < current_time {
+                        // Auto-delist the expired listing
+                        listing.active = false;
+                        let lk = Self::listing_key(&env, listing_id);
+                        env.storage().instance().set(&lk, &listing);
+
+                        // Release escrow
+                        let mut agent = Self::load_agent(&env, listing.asset_id);
+                        if agent.escrow_locked {
+                            match &agent.escrow_holder {
+                                Some(h) if h == &marketplace => {
+                                    agent.escrow_locked = false;
+                                    agent.escrow_holder = None;
+                                    agent.updated_at = current_time;
+                                    agent.nonce =
+                                        agent.nonce.checked_add(1).expect("Nonce overflow");
+                                    Self::save_agent(&env, listing.asset_id, &agent);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        expired_listings.push_back(listing_id);
+                        env.events().publish(
+                            (symbol_short!("lst_exp"),),
+                            (listing_id, listing.asset_id, current_time),
+                        );
+                    }
+                }
+            }
+        }
+        expired_listings
+    }
+
+    // =========================================================================
     // Cancel listing
     // =========================================================================
 
@@ -523,6 +648,666 @@ impl Marketplace {
         env.events().publish(
             (symbol_short!("lst_cncl"),),
             (listing_id, listing.asset_id, seller),
+        );
+    }
+
+    // =========================================================================
+    // Offer and Counter-offer System
+    // =========================================================================
+
+    /// Create an offer on an active listing
+    pub fn make_offer(
+        env: Env,
+        listing_id: u64,
+        offerer: Address,
+        amount: i128,
+        duration_days: Option<u64>,
+    ) -> u64 {
+        offerer.require_auth();
+
+        if listing_id == 0 {
+            panic!("Invalid listing ID");
+        }
+        if amount <= 0 || amount > stellai_lib::PRICE_UPPER_BOUND {
+            panic!("Invalid offer amount");
+        }
+
+        let listing = Self::load_listing(&env, listing_id);
+        if !listing.active {
+            panic!("Listing is not active");
+        }
+        if listing.expires_at < env.ledger().timestamp() {
+            panic!("Listing has expired");
+        }
+
+        let offer_id = Self::next_offer_id(&env);
+        let current_time = env.ledger().timestamp();
+        let expires_at = if let Some(days) = duration_days {
+            current_time + (days * 24 * 60 * 60)
+        } else {
+            current_time + 7 * 24 * 60 * 60 // 7 days default
+        };
+
+        let offer = Offer {
+            offer_id,
+            listing_id,
+            offerer: offerer.clone(),
+            amount,
+            active: true,
+            created_at: current_time,
+            expires_at,
+        };
+
+        let ok = Self::offer_key(&env, offer_id);
+        env.storage().instance().set(&ok, &offer);
+
+        env.events().publish(
+            (symbol_short!("ofr_made"),),
+            (offer_id, listing_id, offerer, amount, expires_at),
+        );
+
+        offer_id
+    }
+
+    /// Accept an offer (only seller can accept)
+    pub fn accept_offer(env: Env, offer_id: u64, seller: Address) -> (u64, u64) {
+        seller.require_auth();
+
+        if offer_id == 0 {
+            panic!("Invalid offer ID");
+        }
+
+        let mut offer: Offer = env
+            .storage()
+            .instance()
+            .get(&Self::offer_key(&env, offer_id))
+            .expect("Offer not found");
+
+        if !offer.active {
+            panic!("Offer is not active");
+        }
+        if offer.expires_at < env.ledger().timestamp() {
+            panic!("Offer has expired");
+        }
+
+        let listing = Self::load_listing(&env, offer.listing_id);
+        if listing.seller != seller {
+            panic!("Only listing seller can accept offers");
+        }
+        if !listing.active {
+            panic!("Listing is no longer active");
+        }
+
+        // Mark offer as inactive
+        offer.active = false;
+        env.storage()
+            .instance()
+            .set(&Self::offer_key(&env, offer_id), &offer);
+
+        // Start the purchase workflow
+        Self::buy_agent(env, offer.listing_id, offer.offerer, offer.amount)
+    }
+
+    /// Reject an offer
+    pub fn reject_offer(env: Env, offer_id: u64, caller: Address) {
+        caller.require_auth();
+
+        let mut offer: Offer = env
+            .storage()
+            .instance()
+            .get(&Self::offer_key(&env, offer_id))
+            .expect("Offer not found");
+
+        let listing = Self::load_listing(&env, offer.listing_id);
+        if listing.seller != caller && offer.offerer != caller {
+            panic!("Only involved parties can reject offers");
+        }
+
+        if offer.active {
+            offer.active = false;
+            env.storage()
+                .instance()
+                .set(&Self::offer_key(&env, offer_id), &offer);
+            env.events().publish(
+                (symbol_short!("ofr_rjct"),),
+                (offer_id, caller, env.ledger().timestamp()),
+            );
+        }
+    }
+
+    // =========================================================================
+    // Auction System
+    // =========================================================================
+
+    /// Create an English auction for an asset
+    pub fn create_auction(
+        env: Env,
+        agent_id: u64,
+        seller: Address,
+        start_price: i128,
+        reserve_price: i128,
+        duration_days: u64,
+        min_bid_increment_bps: Option<u32>,
+    ) -> u64 {
+        seller.require_auth();
+
+        if agent_id == 0 {
+            panic!("Invalid agent ID");
+        }
+        if start_price <= 0 || reserve_price <= 0 {
+            panic!("Prices must be positive");
+        }
+        if reserve_price > start_price {
+            panic!("Reserve price cannot exceed start price");
+        }
+        if duration_days == 0 || duration_days > 365 {
+            panic!("Invalid auction duration");
+        }
+
+        let agent = Self::load_agent(&env, agent_id);
+        if agent.owner != seller {
+            panic!("Only owner can create auctions");
+        }
+        if agent.escrow_locked {
+            panic!("Agent already locked in escrow");
+        }
+
+        let auction_id = Self::next_auction_id(&env);
+        let current_time = env.ledger().timestamp();
+        let end_time = current_time + (duration_days * 24 * 60 * 60);
+        let min_increment = min_bid_increment_bps.unwrap_or(MIN_BID_INCREMENT_BPS);
+
+        #[allow(clippy::manual_range_contains)]
+        if min_increment < 10 || min_increment > 10000 {
+            panic!("Invalid bid increment (must be 0.1% to 100%)");
+        }
+
+        let marketplace = env.current_contract_address();
+        let mut updated_agent = agent;
+        updated_agent.escrow_locked = true;
+        updated_agent.escrow_holder = Some(marketplace.clone());
+        updated_agent.updated_at = current_time;
+        Self::save_agent(&env, agent_id, &updated_agent);
+
+        let auction = stellai_lib::Auction {
+            auction_id,
+            agent_id,
+            seller: seller.clone(),
+            auction_type: stellai_lib::AuctionType::English,
+            start_price,
+            reserve_price,
+            current_price: start_price,
+            highest_bidder: None,
+            highest_bid: 0,
+            start_time: current_time,
+            end_time,
+            min_bid_increment_bps: min_increment,
+            status: stellai_lib::AuctionStatus::Active,
+            dutch_config: None,
+            sealed_commit_end: None,
+            sealed_reveal_end: None,
+        };
+
+        let ak = Self::auction_key(&env, auction_id);
+        env.storage().instance().set(&ak, &auction);
+
+        env.events().publish(
+            (symbol_short!("auc_creat"),),
+            (auction_id, agent_id, seller, start_price, end_time),
+        );
+
+        auction_id
+    }
+
+    /// Place a bid on an active auction
+    pub fn place_bid(env: Env, auction_id: u64, bidder: Address, bid_amount: i128) {
+        bidder.require_auth();
+
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+        if bid_amount <= 0 {
+            panic!("Bid amount must be positive");
+        }
+
+        let mut auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+
+        let current_time = env.ledger().timestamp();
+        if auction.status != stellai_lib::AuctionStatus::Active {
+            panic!("Auction is not active");
+        }
+        if current_time > auction.end_time {
+            panic!("Auction has ended");
+        }
+
+        // Calculate minimum bid required
+        let min_bid = if auction.highest_bid == 0 {
+            auction.start_price
+        } else {
+            let min_increment =
+                (auction.highest_bid * (auction.min_bid_increment_bps as i128)) / 10000;
+            auction.highest_bid + min_increment
+        };
+
+        if bid_amount < min_bid {
+            panic!("Bid too low - minimum required: {}", min_bid);
+        }
+
+        // Refund previous highest bidder if exists
+        if let Some(prev_bidder) = auction.highest_bidder {
+            env.events().publish(
+                (symbol_short!("bid_refnd"),),
+                (auction_id, prev_bidder, auction.highest_bid, current_time),
+            );
+        }
+
+        // Record the new bid
+        let bid_sequence =
+            Self::record_bid(&env, auction_id, bidder.clone(), bid_amount, current_time);
+
+        auction.highest_bidder = Some(bidder.clone());
+        auction.highest_bid = bid_amount;
+        auction.current_price = bid_amount;
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
+
+        env.events().publish(
+            (symbol_short!("bid_plcd"),),
+            (auction_id, bidder, bid_amount, bid_sequence, current_time),
+        );
+    }
+
+    /// Finalize an auction after it has ended
+    pub fn finalize_auction(env: Env, auction_id: u64) {
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+
+        let mut auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+
+        let current_time = env.ledger().timestamp();
+        if auction.status != stellai_lib::AuctionStatus::Active {
+            panic!("Auction already processed");
+        }
+        if current_time <= auction.end_time {
+            panic!("Auction has not ended yet");
+        }
+
+        // Check if reserve price was met
+        if auction.highest_bid >= auction.reserve_price {
+            // Auction was successful - highest bidder wins
+            auction.status = stellai_lib::AuctionStatus::Won;
+
+            if let Some(ref buyer) = auction.highest_bidder {
+                // Process the sale - transfer ownership and distribute funds
+                Self::process_auction_sale(&env, &auction, buyer.clone());
+            }
+
+            env.events().publish(
+                (symbol_short!("auc_won"),),
+                (
+                    auction_id,
+                    auction.highest_bidder.clone(),
+                    auction.highest_bid,
+                    current_time,
+                ),
+            );
+        } else {
+            // Reserve not met - cancel auction, return asset to seller
+            auction.status = stellai_lib::AuctionStatus::Ended;
+            Self::cancel_auction_asset_return(&env, &auction);
+
+            env.events().publish(
+                (symbol_short!("auc_exp"),),
+                (
+                    auction_id,
+                    auction.reserve_price,
+                    auction.highest_bid,
+                    current_time,
+                ),
+            );
+        }
+
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
+    }
+
+    /// Cancel an auction and return the asset to the seller
+    fn cancel_auction_asset_return(env: &Env, auction: &stellai_lib::Auction) {
+        let marketplace = env.current_contract_address();
+        let mut agent = Self::load_agent(env, auction.agent_id);
+
+        if agent.escrow_locked {
+            match &agent.escrow_holder {
+                Some(h) if h == &marketplace => {
+                    agent.escrow_locked = false;
+                    agent.escrow_holder = None;
+                    agent.updated_at = env.ledger().timestamp();
+                    Self::save_agent(env, auction.agent_id, &agent);
+                }
+                _ => panic!("Agent locked by different contract"),
+            }
+        }
+    }
+
+    /// Process a successful auction sale
+    fn process_auction_sale(env: &Env, auction: &stellai_lib::Auction, buyer: Address) {
+        let mut agent = Self::load_agent(env, auction.agent_id);
+
+        // Transfer ownership to the winning bidder
+        agent.owner = buyer.clone();
+        agent.escrow_locked = false;
+        agent.escrow_holder = None;
+        agent.updated_at = env.ledger().timestamp();
+        agent.nonce = agent.nonce.checked_add(1).expect("Nonce overflow");
+        Self::save_agent(env, auction.agent_id, &agent);
+
+        // Calculate royalties and platform fees
+        let royalty_key = Self::royalty_key(env, auction.agent_id);
+        let royalty_info: Option<stellai_lib::RoyaltyInfo> =
+            env.storage().instance().get(&royalty_key);
+        let platform_fee_config: PlatformFeeConfig = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, PLATFORM_FEE_KEY))
+            .expect("Platform fee not configured");
+
+        let mut royalty_amount = 0;
+        if let Some(r) = royalty_info {
+            if r.fee <= stellai_lib::MAX_ROYALTY_PERCENTAGE {
+                royalty_amount = (auction.highest_bid * (r.fee as i128)) / 10000;
+            }
+        }
+
+        let platform_fee = (auction.highest_bid * (platform_fee_config.fee_bps as i128)) / 10000;
+        let seller_amount = auction.highest_bid - royalty_amount - platform_fee;
+
+        // Record transaction for history
+        Self::record_transaction(
+            env,
+            0, // listing_id - 0 for auctions
+            auction.agent_id,
+            auction.seller.clone(),
+            buyer.clone(),
+            auction.highest_bid,
+            royalty_amount,
+            platform_fee,
+            String::from_str(env, "auction_won"),
+        );
+
+        env.events().publish(
+            (symbol_short!("auc_sold"),),
+            (
+                auction.auction_id,
+                auction.agent_id,
+                auction.seller.clone(),
+                buyer,
+                seller_amount,
+                royalty_amount,
+                platform_fee,
+            ),
+        );
+    }
+
+    /// Record a bid for historical tracking
+    fn record_bid(
+        env: &Env,
+        auction_id: u64,
+        bidder: Address,
+        amount: i128,
+        timestamp: u64,
+    ) -> u64 {
+        let bid_key = (String::from_str(env, BID_RECORD_PREFIX), auction_id);
+        let bids: Vec<stellai_lib::BidRecord> = env
+            .storage()
+            .instance()
+            .get(&bid_key)
+            .unwrap_or_else(|| Vec::new(env));
+
+        let sequence = (bids.len() as u64) + 1;
+        let mut new_bids = bids.clone();
+        new_bids.push_back(stellai_lib::BidRecord {
+            bidder,
+            amount,
+            timestamp,
+            bid_increment: if !bids.is_empty() {
+                let prev_bid = bids.last().unwrap();
+                amount - prev_bid.amount
+            } else {
+                0
+            },
+            sequence,
+        });
+
+        env.storage().instance().set(&bid_key, &new_bids);
+        sequence
+    }
+
+    // =========================================================================
+    // Dispute Resolution System
+    // =========================================================================
+
+    /// Open a dispute for a transaction
+    pub fn open_dispute(
+        env: Env,
+        listing_id: u64,
+        initiator: Address,
+        reason: String,
+        evidence_cid: Option<String>,
+    ) -> u64 {
+        initiator.require_auth();
+
+        if listing_id == 0 {
+            panic!("Invalid listing ID");
+        }
+        if reason.is_empty() || reason.len() > 1024 {
+            panic!("Invalid dispute reason length");
+        }
+
+        let dispute_id = Self::next_dispute_id(&env);
+        let current_time = env.ledger().timestamp();
+
+        let dispute = stellai_lib::Dispute {
+            dispute_id,
+            listing_id,
+            asset_type: stellai_lib::AssetType::Agent,
+            initiator: initiator.clone(),
+            reason,
+            evidence_cid,
+            status: stellai_lib::DisputeStatus::Open,
+            created_at: current_time,
+            resolved_at: None,
+        };
+
+        let dk = Self::dispute_key(&env, dispute_id);
+        env.storage().instance().set(&dk, &dispute);
+
+        env.events().publish(
+            (symbol_short!("dsp_open"),),
+            (dispute_id, listing_id, initiator, current_time),
+        );
+
+        dispute_id
+    }
+
+    /// Admin resolves a dispute
+    pub fn resolve_dispute(
+        env: Env,
+        dispute_id: u64,
+        admin: Address,
+        ruling: bool, // true = side with initiator, false = reject dispute
+        resolution_notes: Option<String>,
+    ) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        if dispute_id == 0 {
+            panic!("Invalid dispute ID");
+        }
+
+        let mut dispute: stellai_lib::Dispute = env
+            .storage()
+            .instance()
+            .get(&Self::dispute_key(&env, dispute_id))
+            .expect("Dispute not found");
+
+        if dispute.status != stellai_lib::DisputeStatus::Open {
+            panic!("Dispute is already resolved");
+        }
+
+        let current_time = env.ledger().timestamp();
+        dispute.resolved_at = Some(current_time);
+        dispute.status = if ruling {
+            stellai_lib::DisputeStatus::Resolved
+        } else {
+            stellai_lib::DisputeStatus::Rejected
+        };
+
+        env.storage()
+            .instance()
+            .set(&Self::dispute_key(&env, dispute_id), &dispute);
+
+        env.events().publish(
+            (symbol_short!("dsp_res"),),
+            (dispute_id, ruling as u32, current_time, resolution_notes),
+        );
+    }
+
+    /// Get all active disputes in the queue
+    pub fn get_active_disputes(env: Env, dispute_ids: Vec<u64>) -> Vec<stellai_lib::Dispute> {
+        let mut active_disputes = Vec::new(&env);
+
+        for i in 0..dispute_ids.len() {
+            if let Some(dispute_id) = dispute_ids.get(i) {
+                if let Ok(dispute) = Self::try_load_dispute(&env, dispute_id) {
+                    if dispute.status == stellai_lib::DisputeStatus::Open {
+                        active_disputes.push_back(dispute);
+                    }
+                }
+            }
+        }
+        active_disputes
+    }
+
+    // =========================================================================
+    // Transaction History & Analytics
+    // =========================================================================
+
+    /// Record a transaction in the history
+    #[allow(clippy::too_many_arguments)]
+    fn record_transaction(
+        env: &Env,
+        listing_id: u64,
+        asset_id: u64,
+        seller: Address,
+        buyer: Address,
+        amount: i128,
+        royalty_amount: i128,
+        platform_fee: i128,
+        txn_type: String,
+    ) -> u64 {
+        let key = Symbol::new(env, "txn_ctr");
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let txn_id = current + 1;
+        env.storage().instance().set(&key, &txn_id);
+
+        let record = TransactionRecord {
+            txn_id,
+            listing_id,
+            asset_id,
+            seller,
+            buyer,
+            amount,
+            royalty_amount,
+            platform_fee,
+            timestamp: env.ledger().timestamp(),
+            txn_type,
+        };
+
+        let tk = Self::transaction_key(env, txn_id);
+        env.storage().instance().set(&tk, &record);
+
+        txn_id
+    }
+
+    /// Get transaction history for a user (buyer or seller)
+    pub fn get_user_transactions(
+        env: Env,
+        user: Address,
+        txn_ids: Vec<u64>,
+    ) -> Vec<TransactionRecord> {
+        let mut user_txns = Vec::new(&env);
+
+        for i in 0..txn_ids.len() {
+            if let Some(txn_id) = txn_ids.get(i) {
+                if let Some(record) = env
+                    .storage()
+                    .instance()
+                    .get::<_, TransactionRecord>(&Self::transaction_key(&env, txn_id))
+                {
+                    if record.seller == user || record.buyer == user {
+                        user_txns.push_back(record);
+                    }
+                }
+            }
+        }
+        user_txns
+    }
+
+    /// Get platform analytics (volume, fees, etc.) - admin only
+    pub fn get_platform_analytics(env: Env, admin: Address) -> (i128, i128, u64) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let total_volume: i128 = 0;
+        let total_fees: i128 = 0;
+        let txn_count: u64 = 0;
+
+        // This would typically iterate through a range of transactions
+        // For simplicity, this is a placeholder for the analytics calculation
+
+        (total_volume, total_fees, txn_count)
+    }
+
+    // =========================================================================
+    // Admin Tools
+    // =========================================================================
+
+    /// Update platform fee configuration (admin only)
+    pub fn set_platform_fee(env: Env, admin: Address, fee_bps: u32, recipient: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        if fee_bps > 1000 {
+            panic!("Platform fee cannot exceed 10%");
+        }
+
+        let mut config: PlatformFeeConfig = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, PLATFORM_FEE_KEY))
+            .expect("Platform fee config not found");
+
+        config.fee_bps = fee_bps;
+        config.recipient = recipient.clone();
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PLATFORM_FEE_KEY), &config);
+
+        env.events().publish(
+            (symbol_short!("fee_upd"),),
+            (fee_bps, recipient, env.ledger().timestamp()),
         );
     }
 
@@ -668,6 +1453,53 @@ impl Marketplace {
         let next = current.checked_add(1).expect("Listing ID overflow");
         env.storage().instance().set(&key, &next);
         next
+    }
+
+    fn next_auction_id(env: &Env) -> u64 {
+        let key = Symbol::new(env, AUCTION_CTR_KEY);
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = current.checked_add(1).expect("Auction ID overflow");
+        env.storage().instance().set(&key, &next);
+        next
+    }
+
+    fn next_offer_id(env: &Env) -> u64 {
+        let key = Symbol::new(env, OFFER_CTR_KEY);
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = current.checked_add(1).expect("Offer ID overflow");
+        env.storage().instance().set(&key, &next);
+        next
+    }
+
+    fn next_dispute_id(env: &Env) -> u64 {
+        let key = Symbol::new(env, DISPUTE_CTR_KEY);
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = current.checked_add(1).expect("Dispute ID overflow");
+        env.storage().instance().set(&key, &next);
+        next
+    }
+
+    fn auction_key(env: &Env, auction_id: u64) -> (String, u64) {
+        (String::from_str(env, AUCTION_PREFIX), auction_id)
+    }
+
+    fn offer_key(env: &Env, offer_id: u64) -> (String, u64) {
+        (String::from_str(env, OFFER_PREFIX), offer_id)
+    }
+
+    fn dispute_key(env: &Env, dispute_id: u64) -> (String, u64) {
+        (String::from_str(env, DISPUTE_PREFIX), dispute_id)
+    }
+
+    fn transaction_key(env: &Env, txn_id: u64) -> (String, u64) {
+        (String::from_str(env, TRANSACTION_HISTORY_PREFIX), txn_id)
+    }
+
+    fn try_load_dispute(env: &Env, dispute_id: u64) -> Result<stellai_lib::Dispute, ()> {
+        env.storage()
+            .instance()
+            .get(&Self::dispute_key(env, dispute_id))
+            .ok_or(())
     }
 
     fn assert_admin(env: &Env, caller: &Address) {
@@ -982,6 +1814,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 1u64);
@@ -1043,6 +1876,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 2u64);
@@ -1110,6 +1944,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 3u64);
@@ -1189,6 +2024,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: true,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
             let psk = (String::from_str(&env, PENDING_SALE_PREFIX), 10u64);
@@ -1242,6 +2078,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
@@ -1275,6 +2112,7 @@ mod tests {
                     listing_type: stellai_lib::ListingType::Sale,
                     active: false,
                     created_at: 0,
+                    expires_at: u64::MAX,
                 },
             );
         });
