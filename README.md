@@ -63,6 +63,9 @@ Replace names below with the repository's actual contract filenames and modules.
   - Encodes royalty logic and marketplace fees.
   - Supports instant purchases and escrowed trades.
 
+- MultiSigWallet (multisig-wallet)
+  - M-of-N treasury wallet for Soroban-compatible token custody.
+  - Supports signer management, transaction submission, confirmation, revocation, nonce-ordered execution, daily spending limits, whitelisted recipients, and execution history.
 - TokenVesting (token-vesting)
   - Custodies Soroban-compatible tokens for linear vesting schedules.
   - Supports cliffs, batch beneficiary schedules, beneficiary claims, admin schedule edits, revocation, and early withdrawal penalties.
