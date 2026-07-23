@@ -66,10 +66,15 @@ Replace names below with the repository's actual contract filenames and modules.
 - MultiSigWallet (multisig-wallet)
   - M-of-N treasury wallet for Soroban-compatible token custody.
   - Supports signer management, transaction submission, confirmation, revocation, nonce-ordered execution, daily spending limits, whitelisted recipients, and execution history.
+
 - TokenVesting (token-vesting)
   - Custodies Soroban-compatible tokens for linear vesting schedules.
   - Supports cliffs, batch beneficiary schedules, beneficiary claims, admin schedule edits, revocation, and early withdrawal penalties.
   - Emits lifecycle events for schedule creation, claims, batch funding, modifications, revocations, and early exits.
+
+- MembershipSubscription (membership-subscription)
+  - Tiered membership contract for recurring Soroban token subscriptions.
+  - Supports trials, pull-based renewals, cancellation refunds, pause/resume, tier changes with proration, referral rewards, benefit entitlement checks, and subscription analytics.
 
 - EvolutionManager (evolution)
   - Staking-driven upgrade system: users stake XLM or platform tokens to initiate training.
