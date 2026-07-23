@@ -63,6 +63,10 @@ Replace names below with the repository's actual contract filenames and modules.
   - Encodes royalty logic and marketplace fees.
   - Supports instant purchases and escrowed trades.
 
+- MultiSigWallet (multisig-wallet)
+  - M-of-N treasury wallet for Soroban-compatible token custody.
+  - Supports signer management, transaction submission, confirmation, revocation, nonce-ordered execution, daily spending limits, whitelisted recipients, and execution history.
+
 - EvolutionManager (evolution)
   - Staking-driven upgrade system: users stake XLM or platform tokens to initiate training.
   - Tracks staking positions, upgrade requests, cooldowns and issuance of upgrade attestations.
