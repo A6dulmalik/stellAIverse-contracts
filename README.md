@@ -63,6 +63,11 @@ Replace names below with the repository's actual contract filenames and modules.
   - Encodes royalty logic and marketplace fees.
   - Supports instant purchases and escrowed trades.
 
+- TokenVesting (token-vesting)
+  - Custodies Soroban-compatible tokens for linear vesting schedules.
+  - Supports cliffs, batch beneficiary schedules, beneficiary claims, admin schedule edits, revocation, and early withdrawal penalties.
+  - Emits lifecycle events for schedule creation, claims, batch funding, modifications, revocations, and early exits.
+
 - EvolutionManager (evolution)
   - Staking-driven upgrade system: users stake XLM or platform tokens to initiate training.
   - Tracks staking positions, upgrade requests, cooldowns and issuance of upgrade attestations.

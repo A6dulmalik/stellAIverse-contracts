@@ -3,6 +3,7 @@ members = [
     "contracts/compliance-integration",
     "contracts/execution-hub",
     "contracts/marketplace",
+    "contracts/token-vesting",
     "lib",
     "shared",
 ]
