@@ -4,6 +4,7 @@ members = [
     "contracts/execution-hub",
     "contracts/marketplace",
     "contracts/multisig-wallet",
+    "contracts/token-vesting",
     "lib",
     "shared",
 ]
