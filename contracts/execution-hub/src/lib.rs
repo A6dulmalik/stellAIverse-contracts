@@ -1,154 +1,92 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, IntoVal, Map, String,
-    Symbol, Vec,
+    contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, String, Symbol, Val, Vec,
 };
-#[cfg(test)]
-mod prop_tests;
+
 use stellai_lib::{
+<<<<<<< HEAD
     admin, rbac, storage_keys::EXEC_CTR_KEY, validation, AnomalyScore,
     AnomalySeverity, BehaviorProfile, ProposalStatus, ThresholdKeyShare, ThresholdProposal,
     ADMIN_KEY, DEFAULT_RATE_LIMIT_OPERATIONS, DEFAULT_RATE_LIMIT_WINDOW_SECONDS, MAX_DATA_SIZE,
     MAX_HISTORY_QUERY_LIMIT, MAX_HISTORY_SIZE, MAX_STRING_LENGTH,
+=======
+    OptionalWorkflowCallback, WorkflowCallback, WorkflowInstance, WorkflowStatus, WorkflowStep,
+    WorkflowStepStatus, WorkflowSummary,
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
 };
 
-#[derive(Clone)]
-#[contracttype]
-pub struct RuleKey {
-    pub agent_id: u64,
-    pub rule_name: String,
-}
+// ── Storage keys ──────────────────────────────────────────────────────────────
+
+const ADMIN_KEY: Symbol = symbol_short!("hub_adm");
+const WORKFLOW_CTR_KEY: Symbol = symbol_short!("wf_ctr");
+const EXEC_CTR_KEY: Symbol = symbol_short!("exec_ctr");
+
+const WF_PREFIX: &str = "wf";
+const WF_HIST_PREFIX: &str = "wf_hist";
+const RULE_PREFIX: &str = "rule";
+
+const NONCE_PREFIX: Symbol = symbol_short!("nonce");
+const HIST_PREFIX: Symbol = symbol_short!("hist");
+const RATE_PREFIX: Symbol = symbol_short!("ratelim");
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const MAX_STEPS: u32 = 10;
+const MAX_STRING_LENGTH: u32 = 256;
+const MAX_DATA_SIZE: u32 = 65536;
+const MAX_HISTORY_SIZE: u32 = 1000;
+const MAX_HISTORY_QUERY_LIMIT: u32 = 500;
+const DEFAULT_RATE_LIMIT_OPS: u32 = 100;
+const DEFAULT_RATE_LIMIT_WINDOW: u64 = 60;
+const DEFAULT_WORKFLOW_TIMEOUT: u64 = 300;
+const MAX_HISTORY_PER_INITIATOR: u32 = 200;
+
+// ── Local types ───────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
-#[contracttype]
-pub struct OperatorData {
-    pub operator: Address,
-    pub expires_at: u64,
-}
-
-const AGENT_NFT_KEY: &str = "agent_nft";
-
-// Rate limit configuration storage keys
-const GLOBAL_RATE_LIMIT_KEY: Symbol = symbol_short!("rate_gl");
-const AGENT_RATE_LIMIT_PREFIX: Symbol = symbol_short!("rate_ag");
-const BYPASS_PREFIX: Symbol = symbol_short!("bypass");
-
-#[derive(Clone)]
-#[contracttype]
+#[soroban_sdk::contracttype]
 pub struct ActionRecord {
     pub execution_id: u64,
-    pub agent_id: u64,
     pub action: String,
     pub executor: Address,
     pub timestamp: u64,
     pub nonce: u64,
-    /// Cryptographic hash of execution data for off-chain verification (Issue #10)
-    pub execution_hash: Bytes,
-}
-
-/// Immutable execution receipt for off-chain proof storage (Issue #10)
-/// Receipts are stored separately and cannot be modified after creation
-#[derive(Clone)]
-#[contracttype]
-pub struct ExecutionReceipt {
-    pub execution_id: u64,
-    pub agent_id: u64,
-    pub action: String,
-    pub executor: Address,
-    pub timestamp: u64,
-    pub execution_hash: Bytes,
-    pub created_at: u64,
 }
 
 #[derive(Clone)]
-#[contracttype]
+#[soroban_sdk::contracttype]
 pub struct RateLimitData {
     pub last_reset: u64,
     pub count: u32,
 }
 
-/// Configurable rate limit: max operations per window_seconds (per-agent or global).
-#[derive(Clone)]
-#[contracttype]
-pub struct RateLimitConfig {
-    pub operations: u32,
-    pub window_seconds: u64,
-}
-
-/// Audit record for emergency rate limit bypass (admin only).
-#[derive(Clone)]
-#[contracttype]
-pub struct BypassRecord {
-    pub valid_until: u64,
-    pub reason: String,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub struct BatchOperation {
-    pub agent_id: u64,
-    pub action: String,
-    pub parameters: Bytes,
-    pub nonce: u64,
-    pub execution_hash: Bytes,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub struct BatchResult {
-    pub execution_id: u64,
-    pub success: bool,
-    pub error_message: Option<String>,
-}
+// ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct ExecutionHub;
 
 #[contractimpl]
 impl ExecutionHub {
-    // Initialize contract with admin and AgentNFT address
-    pub fn initialize(env: Env, admin: Address, agent_nft: Address) {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            panic!("Contract already initialized");
-        }
+    // =========================================================================
+    // Initialisation
+    // =========================================================================
 
+    pub fn initialize(env: Env, admin: Address) {
+        if env.storage().instance().has(&ADMIN_KEY) {
+            panic!("Already initialized");
+        }
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, AGENT_NFT_KEY), &agent_nft);
+        env.storage().instance().set(&WORKFLOW_CTR_KEY, &0u64);
         env.storage().instance().set(&EXEC_CTR_KEY, &0u64);
-
-        let global_rate_limit = RateLimitConfig {
-            operations: DEFAULT_RATE_LIMIT_OPERATIONS,
-            window_seconds: DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
-        };
-        env.storage()
-            .instance()
-            .set(&GLOBAL_RATE_LIMIT_KEY, &global_rate_limit);
-
-        env.events()
-            .publish((symbol_short!("init"),), (admin, agent_nft));
+        env.events().publish((symbol_short!("hub_init"),), admin);
     }
 
-    // Get current execution counter
-    pub fn get_execution_counter(env: Env) -> u64 {
-        env.storage().instance().get(&EXEC_CTR_KEY).unwrap_or(0u64)
-    }
+    // =========================================================================
+    // Rule management
+    // =========================================================================
 
-    // Increment execution ID
-    fn next_execution_id(env: &Env) -> u64 {
-        let current: u64 = env.storage().instance().get(&EXEC_CTR_KEY).unwrap_or(0u64);
-        let next = current.saturating_add(1);
-        if next == 0 {
-            panic!("Execution ID overflow");
-        }
-        env.storage().instance().set(&EXEC_CTR_KEY, &next);
-        next
-    }
-
-    // Register execution rule for agent
     pub fn register_rule(
         env: Env,
         agent_id: u64,
@@ -157,113 +95,45 @@ impl ExecutionHub {
         rule_data: Bytes,
     ) {
         owner.require_auth();
-
         Self::validate_agent_id(agent_id);
-        Self::validate_string_length(&rule_name, "Rule name");
-        Self::validate_data_size(&rule_data, "Rule data");
+        Self::validate_string(&rule_name);
+        Self::validate_data(&rule_data);
 
-        let rule_key = RuleKey {
+        let key = (
+            String::from_str(&env, RULE_PREFIX),
             agent_id,
-            rule_name: rule_name.clone(),
-        };
-        let timestamp = env.ledger().timestamp();
-
-        env.storage().instance().set(&rule_key, &rule_data);
+            rule_name.clone(),
+        );
+        env.storage().instance().set(&key, &rule_data);
         env.events().publish(
             (symbol_short!("rule_reg"),),
-            (agent_id, rule_name, owner, timestamp),
+            (agent_id, rule_name, owner, env.ledger().timestamp()),
         );
     }
 
-    // Revoke existing rule
     pub fn revoke_rule(env: Env, agent_id: u64, owner: Address, rule_name: String) {
         owner.require_auth();
         Self::validate_agent_id(agent_id);
-
-        let rule_key = RuleKey {
+        let key = (
+            String::from_str(&env, RULE_PREFIX),
             agent_id,
-            rule_name: rule_name.clone(),
-        };
-        env.storage().instance().remove(&rule_key);
-
+            rule_name.clone(),
+        );
+        env.storage().instance().remove(&key);
         env.events()
             .publish((symbol_short!("rule_rev"),), (agent_id, rule_name, owner));
     }
 
-    // Authorize an operator (lessee) for an agent
-    pub fn authorize_operator(
-        env: Env,
-        agent_id: u64,
-        owner: Address,
-        operator: Address,
-        duration_seconds: u64,
-    ) {
-        owner.require_auth();
-        Self::validate_agent_id(agent_id);
-
-        // Re-validate owner from storage — no implicit trust (Issue #152)
-        let actual_owner = Self::get_agent_owner(&env, agent_id);
-        if owner != actual_owner {
-            panic!("Unauthorized: caller is not agent owner");
-        }
-
-        let expires_at = env.ledger().timestamp() + duration_seconds;
-        let operator_data = OperatorData {
-            operator: operator.clone(),
-            expires_at,
-        };
-
-        let op_key = symbol_short!("op");
-        let agent_op_key = (op_key, agent_id);
-        env.storage().instance().set(&agent_op_key, &operator_data);
-
-        env.events().publish(
-            (symbol_short!("auth_op"),),
-            (agent_id, owner, operator, expires_at),
-        );
-    }
-
-    // Revoke an operator
-    pub fn revoke_operator(env: Env, agent_id: u64, owner: Address) {
-        owner.require_auth();
-        Self::validate_agent_id(agent_id);
-
-        // Re-validate owner from storage — no implicit trust (Issue #152)
-        let actual_owner = Self::get_agent_owner(&env, agent_id);
-        if owner != actual_owner {
-            panic!("Unauthorized: caller is not agent owner");
-        }
-
-        let op_key = symbol_short!("op");
-        let agent_op_key = (op_key, agent_id);
-        env.storage().instance().remove(&agent_op_key);
-
-        env.events()
-            .publish((symbol_short!("rev_op"),), (agent_id, owner));
-    }
-
-    // Get rule data
     pub fn get_rule(env: Env, agent_id: u64, rule_name: String) -> Option<Bytes> {
         Self::validate_agent_id(agent_id);
-        let rule_key = RuleKey {
-            agent_id,
-            rule_name,
-        };
-        env.storage().instance().get(&rule_key)
+        let key = (String::from_str(&env, RULE_PREFIX), agent_id, rule_name);
+        env.storage().instance().get(&key)
     }
 
-    /// Execute action with validation, replay protection, and proof storage (Issue #10)
-    ///
-    /// # Arguments
-    /// * `agent_id` - The agent executing the action
-    /// * `executor` - Address of the executor
-    /// * `action` - Action name/type
-    /// * `parameters` - Action parameters
-    /// * `nonce` - Replay protection nonce
-    /// * `execution_hash` - Cryptographic hash for off-chain verification
-    ///
-    /// # Returns
-    /// The execution ID for this action
+    // =========================================================================
+    // Legacy action execution
+    // =========================================================================
+
     pub fn execute_action(
         env: Env,
         agent_id: u64,
@@ -271,391 +141,631 @@ impl ExecutionHub {
         action: String,
         parameters: Bytes,
         nonce: u64,
-        execution_hash: Bytes,
     ) -> u64 {
         executor.require_auth();
-
         Self::validate_agent_id(agent_id);
+        Self::validate_string(&action);
+        Self::validate_data(&parameters);
 
-        // Permission Check: re-validate owner/operator from storage (Issue #152)
-        // No implicit trust — rbac::require_owner_or_operator reads storage directly.
-        rbac::require_owner_or_operator(
-            &env,
-            &executor,
-            agent_id,
-            |e, id| {
-                let owner = Self::get_agent_owner(e, id);
-                Some(owner)
-            },
-            |e, id| {
-                let op_key = symbol_short!("op");
-                let agent_op_key = (op_key, id);
-                e.storage()
-                    .instance()
-                    .get::<_, OperatorData>(&agent_op_key)
-                    .map(|d| (d.operator, d.expires_at))
-            },
-        )
-        .unwrap_or_else(|_| panic!("Unauthorized: executor is not owner or operator"));
-        Self::validate_string_length(&action, "Action name");
-        Self::validate_data_size(&parameters, "Parameters");
-        Self::validate_data_size(&execution_hash, "Execution hash");
-
-        // Replay protection
-        let stored_nonce = Self::get_action_nonce(&env, agent_id);
+        let stored_nonce = Self::get_nonce_inner(&env, agent_id);
         if nonce <= stored_nonce {
             panic!("Invalid nonce: replay protection triggered");
         }
 
-        // Rate limiting (uses configurable global/per-agent config; bypass if admin set one)
-        Self::check_rate_limit(&env, agent_id);
-
-        // Update behavior profile and run anomaly detection
-        // Use a modest execution cost estimate derived from parameters length as proxy
-        let exec_cost_estimate: i128 = parameters.len() as i128;
-        Self::update_behavior_profile(&env, agent_id, action.clone(), exec_cost_estimate);
-
-        let execution_id = Self::next_execution_id(&env);
-        let timestamp = env.ledger().timestamp();
-
-        Self::set_action_nonce(&env, agent_id, nonce);
-        Self::record_action_in_history(
+        Self::check_rate_limit(
             &env,
             agent_id,
-            execution_id,
-            &action,
-            &executor,
-            nonce,
-            &execution_hash,
+            DEFAULT_RATE_LIMIT_OPS,
+            DEFAULT_RATE_LIMIT_WINDOW,
         );
-        Self::store_execution_receipt(
-            &env,
-            execution_id,
-            agent_id,
-            &action,
-            &executor,
-            timestamp,
-            &execution_hash,
-        );
+
+        let exec_id = Self::next_exec_id(&env);
+        Self::set_nonce_inner(&env, agent_id, nonce);
+        Self::append_action_record(&env, agent_id, exec_id, &action, &executor, nonce);
 
         env.events().publish(
             (symbol_short!("act_exec"),),
             (
-                execution_id,
+                exec_id,
                 agent_id,
-                action.clone(),
-                executor.clone(),
-                timestamp,
+                action,
+                executor,
+                env.ledger().timestamp(),
                 nonce,
-                execution_hash.clone(),
             ),
         );
-
-        execution_id
+        exec_id
     }
 
-    // Get execution history
     pub fn get_history(env: Env, agent_id: u64, limit: u32) -> Vec<ActionRecord> {
         Self::validate_agent_id(agent_id);
-
         if limit > MAX_HISTORY_QUERY_LIMIT {
-            panic!("Limit exceeds maximum allowed (500)");
+            panic!("Limit exceeds maximum allowed");
         }
-
-        let history_key = symbol_short!("hist");
-        let agent_key = (history_key, agent_id);
+        let key = (HIST_PREFIX, agent_id);
         let history: Vec<ActionRecord> = env
             .storage()
             .instance()
-            .get(&agent_key)
+            .get(&key)
             .unwrap_or_else(|| Vec::new(&env));
 
         let mut result = Vec::new(&env);
-        let start_idx = if history.len() > limit {
+        let start = if history.len() > limit {
             history.len() - limit
         } else {
             0
         };
-
-        for i in start_idx..history.len() {
+        for i in start..history.len() {
             if let Some(item) = history.get(i) {
                 result.push_back(item);
             }
         }
-
         result
     }
 
-    // Get total action count
     pub fn get_action_count(env: Env, agent_id: u64) -> u32 {
         Self::validate_agent_id(agent_id);
-        let history_key = symbol_short!("hist");
-        let agent_key = (history_key, agent_id);
+        let key = (HIST_PREFIX, agent_id);
         let history: Vec<ActionRecord> = env
             .storage()
             .instance()
-            .get(&agent_key)
+            .get(&key)
             .unwrap_or_else(|| Vec::new(&env));
         history.len()
     }
 
-    /// Get execution receipt by execution ID (Issue #10)
-    /// Read-only getter for immutable execution proofs
-    /// Returns None if the execution ID doesn't exist
-    pub fn get_execution_receipt(env: Env, execution_id: u64) -> Option<ExecutionReceipt> {
-        let receipt_key = symbol_short!("receipt");
-        let exec_receipt_key = (receipt_key, execution_id);
-        env.storage().instance().get(&exec_receipt_key)
+    // =========================================================================
+    // Workflow creation
+    // =========================================================================
+
+    /// Create a new workflow.  Returns the workflow_id.
+    ///
+    /// `steps` must be non-empty, ordered, and have `status = Pending`.
+    /// `callback_contract`: if provided, `wf_done(workflow_id, status)` will be called on it at terminal status.
+    pub fn create_workflow(
+        env: Env,
+        initiator: Address,
+        name: String,
+        steps: Vec<WorkflowStep>,
+        deadline_offset_seconds: Option<u64>,
+        context_tag: Option<String>,
+        callback_contract: Option<Address>,
+    ) -> u64 {
+        initiator.require_auth();
+
+        if steps.is_empty() {
+            panic!("Workflow must have at least one step");
+        }
+        if steps.len() > MAX_STEPS {
+            panic!("Too many workflow steps");
+        }
+        Self::validate_string(&name);
+
+        let now = env.ledger().timestamp();
+        let offset = deadline_offset_seconds.unwrap_or(DEFAULT_WORKFLOW_TIMEOUT);
+        let deadline = now.checked_add(offset).expect("Deadline overflow");
+
+        let callback = match callback_contract {
+            Some(contract) => OptionalWorkflowCallback::Some(WorkflowCallback {
+                callback_contract: contract,
+                fired: false,
+            }),
+            None => OptionalWorkflowCallback::None,
+        };
+
+        let workflow_id = Self::next_workflow_id(&env);
+        let workflow = WorkflowInstance {
+            workflow_id,
+            initiator: initiator.clone(),
+            name: name.clone(),
+            steps,
+            status: WorkflowStatus::Pending,
+            current_step: 0,
+            completed_steps: 0,
+            created_at: now,
+            updated_at: now,
+            deadline,
+            context_tag,
+            callback,
+            failure_reason: None,
+            rolled_back_steps: 0,
+        };
+
+        Self::save_workflow(&env, &workflow);
+        Self::append_history_summary(&env, &initiator, &workflow);
+
+        env.events().publish(
+            (symbol_short!("wf_crt"),),
+            (workflow_id, initiator, name, now),
+        );
+        workflow_id
     }
 
-    /// Get agent ID for a given execution ID (Issue #10)
-    /// Provides reverse lookup from execution to agent
-    /// Returns None if the execution ID doesn't exist
-    pub fn get_agent_for_execution(env: Env, execution_id: u64) -> Option<u64> {
-        let exec_agent_key = symbol_short!("exagent");
-        let exec_to_agent_key = (exec_agent_key, execution_id);
-        env.storage().instance().get(&exec_to_agent_key)
-    }
+    // =========================================================================
+    // Workflow step execution
+    // =========================================================================
 
-    /// Get all execution receipts for an agent (Issue #10)
-    /// Returns a list of execution receipts for the given agent
-    pub fn get_agent_receipts(env: Env, agent_id: u64, limit: u32) -> Vec<ExecutionReceipt> {
-        Self::validate_agent_id(agent_id);
+    /// Advance the workflow by executing its next pending step.
+    /// Returns the step's final status.
+    pub fn execute_workflow_step(env: Env, workflow_id: u64) -> WorkflowStepStatus {
+        let mut wf = Self::load_workflow(&env, workflow_id);
 
-        if limit > MAX_HISTORY_QUERY_LIMIT {
-            panic!("Limit exceeds maximum allowed (500)");
+        if wf.status != WorkflowStatus::Pending && wf.status != WorkflowStatus::Running {
+            panic!("Workflow is not in an executable state");
         }
 
-        // Get action history and extract receipts
-        let history_key = symbol_short!("hist");
-        let agent_key = (history_key, agent_id);
-        let history: Vec<ActionRecord> = env
+        let now = env.ledger().timestamp();
+
+        if now > wf.deadline {
+            wf.status = WorkflowStatus::Failed;
+            wf.failure_reason = Some(String::from_str(&env, "Deadline exceeded"));
+            wf.updated_at = now;
+            Self::save_workflow(&env, &wf);
+            Self::maybe_fire_callback(&env, &mut wf);
+            Self::save_workflow(&env, &wf);
+            env.events()
+                .publish((symbol_short!("wf_tmout"),), (workflow_id, now));
+            return WorkflowStepStatus::Failed;
+        }
+
+        wf.status = WorkflowStatus::Running;
+        let step_index = wf.current_step;
+        if step_index >= wf.steps.len() {
+            panic!("All steps already executed");
+        }
+
+        let mut step = wf.steps.get(step_index).expect("Step not found");
+        step.status = WorkflowStepStatus::Executing;
+        step.updated_at = now;
+        wf.steps.set(step_index, step.clone());
+        Self::save_workflow(&env, &wf);
+
+        let call_ok = Self::try_invoke_step(&env, &step);
+
+        if call_ok {
+            step.status = WorkflowStepStatus::Completed;
+            step.updated_at = now;
+            step.error = None;
+            wf.steps.set(step_index, step.clone());
+            wf.completed_steps = wf
+                .completed_steps
+                .checked_add(1)
+                .expect("completed_steps overflow");
+            wf.current_step = wf
+                .current_step
+                .checked_add(1)
+                .expect("current_step overflow");
+            wf.updated_at = now;
+
+            env.events().publish(
+                (symbol_short!("wf_stp_ok"),),
+                (workflow_id, step_index, step.name.clone(), now),
+            );
+
+            if wf.current_step >= wf.steps.len() {
+                wf.status = WorkflowStatus::Completed;
+                Self::update_history_summary(&env, &wf);
+                Self::save_workflow(&env, &wf);
+                Self::maybe_fire_callback(&env, &mut wf);
+                Self::save_workflow(&env, &wf);
+                env.events().publish(
+                    (symbol_short!("wf_done"),),
+                    (workflow_id, wf.completed_steps, now),
+                );
+            } else {
+                Self::save_workflow(&env, &wf);
+            }
+
+            WorkflowStepStatus::Completed
+        } else if step.retry_count < step.max_retries {
+            step.retry_count = step
+                .retry_count
+                .checked_add(1)
+                .expect("retry_count overflow");
+            step.status = WorkflowStepStatus::Pending;
+            step.error = Some(String::from_str(&env, "Transient failure; will retry"));
+            step.updated_at = now;
+            wf.steps.set(step_index, step);
+            wf.updated_at = now;
+            Self::save_workflow(&env, &wf);
+            env.events()
+                .publish((symbol_short!("wf_retry"),), (workflow_id, step_index, now));
+            WorkflowStepStatus::Pending
+        } else if step.required {
+            step.status = WorkflowStepStatus::Failed;
+            step.error = Some(String::from_str(&env, "Step failed after all retries"));
+            step.updated_at = now;
+            wf.steps.set(step_index, step);
+            wf.failure_reason = Some(String::from_str(&env, "Required step failed"));
+            wf.updated_at = now;
+            Self::save_workflow(&env, &wf);
+
+            Self::rollback_completed_steps(&env, &mut wf);
+            Self::update_history_summary(&env, &wf);
+            Self::save_workflow(&env, &wf);
+            Self::maybe_fire_callback(&env, &mut wf);
+            Self::save_workflow(&env, &wf);
+
+            env.events()
+                .publish((symbol_short!("wf_fail"),), (workflow_id, step_index, now));
+            WorkflowStepStatus::Failed
+        } else {
+            // Optional step — skip it
+            step.status = WorkflowStepStatus::Skipped;
+            step.error = Some(String::from_str(&env, "Optional step failed; skipped"));
+            step.updated_at = now;
+            wf.steps.set(step_index, step);
+            wf.current_step = wf
+                .current_step
+                .checked_add(1)
+                .expect("current_step overflow");
+            wf.updated_at = now;
+            Self::save_workflow(&env, &wf);
+            env.events()
+                .publish((symbol_short!("wf_skip"),), (workflow_id, step_index, now));
+            WorkflowStepStatus::Skipped
+        }
+    }
+
+    // =========================================================================
+    // Manual cancellation
+    // =========================================================================
+
+    pub fn cancel_workflow(env: Env, workflow_id: u64, caller: Address) {
+        caller.require_auth();
+        let mut wf = Self::load_workflow(&env, workflow_id);
+
+        let admin: Address = env
             .storage()
             .instance()
-            .get(&agent_key)
-            .unwrap_or_else(|| Vec::new(&env));
+            .get(&ADMIN_KEY)
+            .expect("Hub not initialized");
 
-        let mut receipts = Vec::new(&env);
-        let start_idx = if history.len() > limit {
-            history.len() - limit
-        } else {
-            0
-        };
-
-        for i in start_idx..history.len() {
-            if let Some(record) = history.get(i) {
-                if let Some(receipt) = Self::get_execution_receipt(env.clone(), record.execution_id)
-                {
-                    receipts.push_back(receipt);
-                }
-            }
+        if caller != wf.initiator && caller != admin {
+            panic!("Unauthorized: only initiator or admin can cancel");
         }
 
-        receipts
+        match wf.status {
+            WorkflowStatus::Completed
+            | WorkflowStatus::RolledBack
+            | WorkflowStatus::Failed
+            | WorkflowStatus::Cancelled => panic!("Workflow already terminal"),
+            _ => {}
+        }
+
+        let now = env.ledger().timestamp();
+        wf.failure_reason = Some(String::from_str(&env, "Cancelled by caller"));
+        wf.updated_at = now;
+
+        Self::rollback_completed_steps(&env, &mut wf);
+        wf.status = WorkflowStatus::Cancelled;
+        Self::update_history_summary(&env, &wf);
+        Self::save_workflow(&env, &wf);
+        Self::maybe_fire_callback(&env, &mut wf);
+        Self::save_workflow(&env, &wf);
+
+        env.events()
+            .publish((symbol_short!("wf_cncl"),), (workflow_id, caller, now));
     }
 
-    // Get admin address
-    pub fn get_admin(env: Env) -> Address {
-        admin::get_admin(&env).unwrap_or_else(|_| panic!("Admin not set"))
+    // =========================================================================
+    // Queries
+    // =========================================================================
+
+    pub fn get_workflow(env: Env, workflow_id: u64) -> WorkflowInstance {
+        Self::load_workflow(&env, workflow_id)
     }
 
-    /// Returns the effective rate limit config for an agent (per-agent override or global).
-    pub fn get_rate_limit(env: Env, agent_id: u64) -> RateLimitConfig {
-        Self::get_effective_rate_limit(&env, agent_id)
+    pub fn get_workflow_status(env: Env, workflow_id: u64) -> WorkflowStatus {
+        Self::load_workflow(&env, workflow_id).status
     }
 
-    /// Admin: set global rate limit (applies to all agents without an override).
-    pub fn set_global_rate_limit(env: Env, admin: Address, ops: u32, window_secs: u64) {
-        admin.require_auth();
-        Self::verify_admin(&env, &admin);
-        Self::validate_rate_limit_config(ops, window_secs);
-
-        let config = RateLimitConfig {
-            operations: ops,
-            window_seconds: window_secs,
-        };
+    pub fn get_workflow_history(env: Env, initiator: Address) -> Vec<WorkflowSummary> {
+        let key = (String::from_str(&env, WF_HIST_PREFIX), initiator);
         env.storage()
             .instance()
-            .set(&GLOBAL_RATE_LIMIT_KEY, &config);
-        // agent_id 0 denotes global in events
-        env.events()
-            .publish((symbol_short!("rate_cfg"),), (0u64, ops, window_secs));
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
-    /// Admin: set per-agent rate limit override (e.g. for trusted oracles or high-frequency agents).
-    pub fn set_agent_rate_limit(
-        env: Env,
-        admin: Address,
-        agent_id: u64,
-        ops: u32,
-        window_secs: u64,
-    ) {
-        admin.require_auth();
-        Self::verify_admin(&env, &admin);
-        Self::validate_agent_id(agent_id);
-        Self::validate_rate_limit_config(ops, window_secs);
-
-        let config = RateLimitConfig {
-            operations: ops,
-            window_seconds: window_secs,
-        };
-        let agent_key = (AGENT_RATE_LIMIT_PREFIX, agent_id);
-        env.storage().instance().set(&agent_key, &config);
-        env.events()
-            .publish((symbol_short!("rate_cfg"),), (agent_id, ops, window_secs));
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("Hub not initialized")
     }
 
-    /// Admin: remove per-agent override; agent falls back to global config.
-    pub fn reset_agent_rate_limit(env: Env, admin: Address, agent_id: u64) {
-        admin.require_auth();
-        Self::verify_admin(&env, &admin);
-        Self::validate_agent_id(agent_id);
-
-        let agent_key = (AGENT_RATE_LIMIT_PREFIX, agent_id);
-        env.storage().instance().remove(&agent_key);
-        env.events()
-            .publish((symbol_short!("rate_rst"),), (agent_id,));
-    }
-
-    /// Admin: emergency rate limit bypass for a specific agent (with audit log).
-    pub fn set_rate_limit_bypass(
-        env: Env,
-        admin: Address,
-        agent_id: u64,
-        reason: String,
-        valid_until: u64,
-    ) {
-        admin.require_auth();
-        Self::verify_admin(&env, &admin);
-        Self::validate_agent_id(agent_id);
-        let now = env.ledger().timestamp();
-        if valid_until <= now {
-            panic!("valid_until must be in the future");
-        }
-
-        let record = BypassRecord {
-            valid_until,
-            reason: reason.clone(),
-        };
-        let bypass_key = (BYPASS_PREFIX, agent_id);
-        env.storage().instance().set(&bypass_key, &record);
-        env.events()
-            .publish((symbol_short!("bypass_on"),), (agent_id, reason));
-    }
-
-    /// Admin: clear emergency bypass for an agent.
-    pub fn clear_rate_limit_bypass(env: Env, admin: Address, agent_id: u64) {
-        admin.require_auth();
-        Self::verify_admin(&env, &admin);
-        Self::validate_agent_id(agent_id);
-
-        let bypass_key = (BYPASS_PREFIX, agent_id);
-        env.storage().instance().remove(&bypass_key);
-        env.events()
-            .publish((symbol_short!("byp_off"),), (agent_id,));
-    }
-
-    // Transfer admin rights
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
-        admin::transfer_admin(&env, &current_admin, &new_admin)
-            .unwrap_or_else(|_| panic!("Unauthorized: caller is not admin"));
+        current_admin.require_auth();
+        Self::assert_admin(&env, &current_admin);
+        env.storage().instance().set(&ADMIN_KEY, &new_admin);
         env.events()
             .publish((symbol_short!("adm_xfer"),), (current_admin, new_admin));
     }
 
-    // Helper: verify admin — always re-reads from storage (Issue #152)
-    fn verify_admin(env: &Env, caller: &Address) {
-        rbac::require_admin(env, caller)
-            .unwrap_or_else(|_| panic!("Unauthorized: caller is not admin"));
+    pub fn get_execution_counter(env: Env) -> u64 {
+        env.storage().instance().get(&EXEC_CTR_KEY).unwrap_or(0)
     }
 
-    // Helper: validate rate limit config (ops and window must be positive)
-    fn validate_rate_limit_config(ops: u32, window_secs: u64) {
-        if ops == 0 {
-            panic!("operations must be greater than 0");
-        }
-        if window_secs == 0 {
-            panic!("window_seconds must be greater than 0");
-        }
+    pub fn get_workflow_counter(env: Env) -> u64 {
+        env.storage().instance().get(&WORKFLOW_CTR_KEY).unwrap_or(0)
     }
 
-    // Helper: get effective rate limit for agent (override or global)
-    fn get_effective_rate_limit(env: &Env, agent_id: u64) -> RateLimitConfig {
-        let agent_key = (AGENT_RATE_LIMIT_PREFIX, agent_id);
-        if let Some(config) = env
-            .storage()
-            .instance()
-            .get::<_, RateLimitConfig>(&agent_key)
-        {
-            return config;
-        }
+    // =========================================================================
+    // Private — IDs
+    // =========================================================================
+
+    fn next_exec_id(env: &Env) -> u64 {
+        let current: u64 = env.storage().instance().get(&EXEC_CTR_KEY).unwrap_or(0);
+        let next = current.checked_add(1).expect("Execution ID overflow");
+        env.storage().instance().set(&EXEC_CTR_KEY, &next);
+        next
+    }
+
+    fn next_workflow_id(env: &Env) -> u64 {
+        let current: u64 = env.storage().instance().get(&WORKFLOW_CTR_KEY).unwrap_or(0);
+        let next = current.checked_add(1).expect("Workflow ID overflow");
+        env.storage().instance().set(&WORKFLOW_CTR_KEY, &next);
+        next
+    }
+
+    // =========================================================================
+    // Private — storage
+    // =========================================================================
+
+    fn workflow_key(env: &Env, workflow_id: u64) -> (String, u64) {
+        (String::from_str(env, WF_PREFIX), workflow_id)
+    }
+
+    fn load_workflow(env: &Env, workflow_id: u64) -> WorkflowInstance {
+        let key = Self::workflow_key(env, workflow_id);
         env.storage()
             .instance()
-            .get(&GLOBAL_RATE_LIMIT_KEY)
-            .unwrap_or_else(|| panic!("Global rate limit not set"))
+            .get(&key)
+            .expect("Workflow not found")
     }
 
-    // Helper: check if agent has an active bypass
-    fn has_active_bypass(env: &Env, agent_id: u64) -> bool {
-        let bypass_key = (BYPASS_PREFIX, agent_id);
-        let now = env.ledger().timestamp();
-        if let Some(record) = env.storage().instance().get::<_, BypassRecord>(&bypass_key) {
-            return now < record.valid_until;
+    fn save_workflow(env: &Env, wf: &WorkflowInstance) {
+        let key = Self::workflow_key(env, wf.workflow_id);
+        env.storage().instance().set(&key, wf);
+    }
+
+    fn append_history_summary(env: &Env, initiator: &Address, wf: &WorkflowInstance) {
+        let key = (String::from_str(env, WF_HIST_PREFIX), initiator.clone());
+        let mut history: Vec<WorkflowSummary> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        if history.len() >= MAX_HISTORY_PER_INITIATOR {
+            history.remove(0);
         }
-        false
+        history.push_back(WorkflowSummary {
+            workflow_id: wf.workflow_id,
+            name: wf.name.clone(),
+            status: wf.status,
+            created_at: wf.created_at,
+            completed_at: None,
+        });
+        env.storage().instance().set(&key, &history);
     }
 
-    // Helper: validate agent ID
+    fn update_history_summary(env: &Env, wf: &WorkflowInstance) {
+        let key = (String::from_str(env, WF_HIST_PREFIX), wf.initiator.clone());
+        let mut history: Vec<WorkflowSummary> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        let now = env.ledger().timestamp();
+        for i in 0..history.len() {
+            if let Some(mut s) = history.get(i) {
+                if s.workflow_id == wf.workflow_id {
+                    s.status = wf.status;
+                    s.completed_at = Some(now);
+                    history.set(i, s);
+                    break;
+                }
+            }
+        }
+        env.storage().instance().set(&key, &history);
+    }
+
+    // =========================================================================
+    // Private — step execution
+    // =========================================================================
+
+    /// Invoke the step's target contract.  Returns true on success.
+    ///
+    /// Because Soroban panics abort the entire transaction, every workflow
+    /// step must be idempotent and its target function must not panic on
+    /// inputs it controls.  The `required` / `max_retries` fields let
+    /// callers classify transient vs permanent failures.
+    fn try_invoke_step(env: &Env, step: &WorkflowStep) -> bool {
+        let mut args = Vec::<Val>::new(env);
+        args.push_back(step.step_index.into_val(env));
+        args.push_back(step.encoded_args.clone().into_val(env));
+        env.invoke_contract::<()>(&step.target_contract, &symbol_short!("exec_step"), args);
+        true
+    }
+
+    /// Roll back completed steps in reverse order by calling `rollback` on
+    /// their target contracts with the original `encoded_args`.
+    fn rollback_completed_steps(env: &Env, wf: &mut WorkflowInstance) {
+        let now = env.ledger().timestamp();
+        let rollback_sym = symbol_short!("rollback");
+        let step_count = wf.steps.len();
+
+        let mut i = step_count;
+        while i > 0 {
+            i -= 1;
+            let mut step = wf.steps.get(i).expect("Step index out of range");
+            if step.status != WorkflowStepStatus::Completed {
+                continue;
+            }
+
+            let mut rb_args = Vec::<Val>::new(env);
+            rb_args.push_back(step.encoded_args.clone().into_val(env));
+            env.invoke_contract::<()>(&step.target_contract, &rollback_sym, rb_args);
+
+            step.status = WorkflowStepStatus::RolledBack;
+            step.updated_at = now;
+            wf.steps.set(i, step);
+            wf.rolled_back_steps = wf
+                .rolled_back_steps
+                .checked_add(1)
+                .expect("rolled_back_steps overflow");
+            wf.updated_at = now;
+
+            env.events()
+                .publish((symbol_short!("wf_rb"),), (wf.workflow_id, i, now));
+        }
+
+        // Determine terminal status
+        let any_step_failed = {
+            let mut failed = false;
+            for idx in 0..wf.steps.len() {
+                if let Some(s) = wf.steps.get(idx) {
+                    if s.status == WorkflowStepStatus::Failed {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            failed
+        };
+        wf.status = if any_step_failed {
+            WorkflowStatus::Failed
+        } else {
+            WorkflowStatus::RolledBack
+        };
+        wf.updated_at = now;
+    }
+
+    /// Fire the registered callback if present and not yet fired.
+    fn maybe_fire_callback(env: &Env, wf: &mut WorkflowInstance) {
+        let cb = match &wf.callback {
+            OptionalWorkflowCallback::Some(c) if !c.fired => c.callback_contract.clone(),
+            _ => return,
+        };
+
+        let status_u32: u32 = match wf.status {
+            WorkflowStatus::Completed => 2,
+            WorkflowStatus::RolledBack => 3,
+            WorkflowStatus::Failed => 4,
+            WorkflowStatus::Cancelled => 5,
+            _ => 0,
+        };
+
+        let mut args = Vec::<Val>::new(env);
+        args.push_back(wf.workflow_id.into_val(env));
+        args.push_back(status_u32.into_val(env));
+
+        env.invoke_contract::<()>(&cb, &symbol_short!("wf_done"), args);
+
+        if let OptionalWorkflowCallback::Some(ref mut c) = wf.callback {
+            c.fired = true;
+        }
+
+        env.events().publish(
+            (symbol_short!("wf_cb"),),
+            (wf.workflow_id, status_u32, env.ledger().timestamp()),
+        );
+    }
+
+    // =========================================================================
+    // Private — v1 compatibility helpers
+    // =========================================================================
+
+    fn get_nonce_inner(env: &Env, agent_id: u64) -> u64 {
+        let key = (NONCE_PREFIX, agent_id);
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
+
+    fn set_nonce_inner(env: &Env, agent_id: u64, nonce: u64) {
+        let key = (NONCE_PREFIX, agent_id);
+        env.storage().instance().set(&key, &nonce);
+    }
+
+    fn append_action_record(
+        env: &Env,
+        agent_id: u64,
+        exec_id: u64,
+        action: &String,
+        executor: &Address,
+        nonce: u64,
+    ) {
+        let key = (HIST_PREFIX, agent_id);
+        let mut history: Vec<ActionRecord> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        if history.len() >= MAX_HISTORY_SIZE {
+            panic!("Action history limit exceeded");
+        }
+        history.push_back(ActionRecord {
+            execution_id: exec_id,
+            action: action.clone(),
+            executor: executor.clone(),
+            timestamp: env.ledger().timestamp(),
+            nonce,
+        });
+        env.storage().instance().set(&key, &history);
+    }
+
+    fn check_rate_limit(env: &Env, agent_id: u64, max_ops: u32, window: u64) {
+        let now = env.ledger().timestamp();
+        let key = (RATE_PREFIX, agent_id);
+        let data: Option<RateLimitData> = env.storage().instance().get(&key);
+        let (last_reset, count) = match data {
+            Some(d) => (d.last_reset, d.count),
+            None => (now, 0),
+        };
+        let elapsed = now.saturating_sub(last_reset);
+        let (new_reset, new_count) = if elapsed > window {
+            (now, 1)
+        } else if count < max_ops {
+            (last_reset, count + 1)
+        } else {
+            panic!("Rate limit exceeded");
+        };
+        env.storage().instance().set(
+            &key,
+            &RateLimitData {
+                last_reset: new_reset,
+                count: new_count,
+            },
+        );
+    }
+
+    // =========================================================================
+    // Validation
+    // =========================================================================
+
     fn validate_agent_id(agent_id: u64) {
-        if validation::validate_nonzero_id(agent_id).is_err() {
+        if agent_id == 0 {
             panic!("Invalid agent ID: must be non-zero");
         }
     }
 
-    // Helper: validate string length
-    fn validate_string_length(s: &String, _field_name: &str) {
+    fn validate_string(s: &String) {
         if s.len() > MAX_STRING_LENGTH {
             panic!("String exceeds maximum length");
         }
     }
 
-    // Helper: validate data size
-    fn validate_data_size(data: &Bytes, _field_name: &str) {
+    fn validate_data(data: &Bytes) {
         if data.len() > MAX_DATA_SIZE {
             panic!("Data exceeds maximum size");
         }
     }
 
-    // Helper: get nonce
-    fn get_action_nonce(env: &Env, agent_id: u64) -> u64 {
-        let nonce_key = symbol_short!("nonce");
-        let agent_nonce_key = (nonce_key, agent_id);
-        env.storage().instance().get(&agent_nonce_key).unwrap_or(0)
-    }
-
-    // Helper: set nonce
-    fn set_action_nonce(env: &Env, agent_id: u64, nonce: u64) {
-        let nonce_key = symbol_short!("nonce");
-        let agent_nonce_key = (nonce_key, agent_id);
-        env.storage().instance().set(&agent_nonce_key, &nonce);
-    }
-
-    // Helper: record action in history with execution hash (Issue #10)
-    fn record_action_in_history(
-        env: &Env,
-        agent_id: u64,
-        execution_id: u64,
-        action: &String,
-        executor: &Address,
-        nonce: u64,
-        execution_hash: &Bytes,
-    ) {
-        let history_key = symbol_short!("hist");
-        let agent_key = (history_key, agent_id);
-
-        let mut history: Vec<ActionRecord> = env
+    fn assert_admin(env: &Env, caller: &Address) {
+        let admin: Address = env
             .storage()
             .instance()
+<<<<<<< HEAD
             .get(&agent_key)
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -1531,783 +1641,338 @@ impl ExecutionHub {
             execution_id,
             success: true,
             error_message: None,
+=======
+            .get(&ADMIN_KEY)
+            .expect("Hub not initialized");
+        if caller != &admin {
+            panic!("Unauthorized: caller is not admin");
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
         }
     }
 }
 
+// =============================================================================
+// Tests
+// =============================================================================
+
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
-    use soroban_sdk::testutils::Ledger;
-    use soroban_sdk::{testutils::Address as _, Env};
-
-    // Mock AgentNFT contract for testing cross-contract calls
-    #[contract]
-    pub struct MockAgentNFT;
-
-    #[contractimpl]
-    impl MockAgentNFT {
-        pub fn get_agent_owner(env: Env, agent_id: u64) -> Address {
-            env.storage()
-                .instance()
-                .get(&agent_id)
-                .expect("Agent not found in mock")
-        }
-
-        pub fn set_owner(env: Env, agent_id: u64, owner: Address) {
-            env.storage().instance().set(&agent_id, &owner);
-        }
-    }
-
-    fn setup_test() -> (
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
         Env,
-        ExecutionHubClient<'static>,
-        Address,
-        MockAgentNFTClient<'static>,
-        Address,
-    ) {
+    };
+
+    fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-
-        let contract_id = env.register_contract(None, ExecutionHub);
-        let client = ExecutionHubClient::new(&env, &contract_id);
-
-        let agent_nft_id = env.register_contract(None, MockAgentNFT);
-        let agent_nft_client = MockAgentNFTClient::new(&env, &agent_nft_id);
-
+        let contract_id = env.register(ExecutionHub, ());
         let admin = Address::generate(&env);
-
-        // Initialize with agent nft address
-        client.initialize(&admin, &agent_nft_id);
-
-        (env, client, admin, agent_nft_client, agent_nft_id)
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        client.initialize(&admin);
+        (env, contract_id, admin)
     }
 
-    #[test]
-    fn test_threshold_propose_sign_execute_and_recovery() {
-        let (env, client, admin, agent_nft, agent_nft_id) = setup_test();
-
-        // Create dummy shares
-        let agent_id: u64 = 42;
-        let threshold_m: u32 = 2;
-        let n_parties: u32 = 3;
-
-        let holder1 = Address::generate(&env);
-        let holder2 = Address::generate(&env);
-        let holder3 = Address::generate(&env);
-
-        let now = env.ledger().timestamp();
-
-        let s1 = ThresholdKeyShare {
-            agent_id,
-            share_holder: holder1.clone(),
-            share_index: 1,
-            x_coordinate: 1,
-            y_coordinate_encrypted: Bytes::from_array(&env, &[1u8]),
-            commitment: Bytes::from_array(&env, &[11u8]),
-            created_at: now,
-        };
-        let s2 = ThresholdKeyShare {
-            agent_id,
-            share_holder: holder2.clone(),
-            share_index: 2,
-            x_coordinate: 2,
-            y_coordinate_encrypted: Bytes::from_array(&env, &[2u8]),
-            commitment: Bytes::from_array(&env, &[22u8]),
-            created_at: now,
-        };
-        let s3 = ThresholdKeyShare {
-            agent_id,
-            share_holder: holder3.clone(),
-            share_index: 3,
-            x_coordinate: 3,
-            y_coordinate_encrypted: Bytes::from_array(&env, &[3u8]),
-            commitment: Bytes::from_array(&env, &[33u8]),
-            created_at: now,
-        };
-
-        let mut shares = Vec::new(&env);
-        shares.push_back(s1.clone());
-        shares.push_back(s2.clone());
-        shares.push_back(s3.clone());
-
-        // create threshold agent as admin via client
-        client.create_threshold_agent(&admin, &agent_id, &threshold_m, &n_parties, &shares);
-
-        // proposer creates a proposal
-        let proposer = Address::generate(&env);
-        let action = Bytes::from_array(&env, &[9u8]);
-        let prop_id = client.propose_action(&proposer, &agent_id, &action);
-
-        // holders sign
-        let sig = Bytes::from_array(&env, &[7u8]);
-        client.sign_proposal(&holder1, &prop_id, &sig);
-        client.sign_proposal(&holder2, &prop_id, &sig);
-
-        // submit recovery shares (provide indices and y_values and matching proofs)
-        let mut idxs = Vec::new(&env);
-        idxs.push_back(1u32);
-        idxs.push_back(2u32);
-
-        let mut yvals = Vec::new(&env);
-        yvals.push_back(Bytes::from_array(&env, &[111u8]));
-        yvals.push_back(Bytes::from_array(&env, &[222u8]));
-
-        let mut proofs = Vec::new(&env);
-        proofs.push_back(Bytes::from_array(&env, &[11u8]));
-        proofs.push_back(Bytes::from_array(&env, &[22u8]));
-
-        client.submit_recovery_shares(&holder1, &agent_id, &idxs, &yvals, &proofs);
+    fn make_step(
+        env: &Env,
+        idx: u32,
+        target: &Address,
+        fn_name: &str,
+        required: bool,
+    ) -> WorkflowStep {
+        WorkflowStep {
+            step_index: idx,
+            name: String::from_str(env, fn_name),
+            target_contract: target.clone(),
+            function_name: String::from_str(env, fn_name),
+            encoded_args: Bytes::new(env),
+            required,
+            max_retries: 0,
+            retry_count: 0,
+            status: WorkflowStepStatus::Pending,
+            result: None,
+            error: None,
+            updated_at: 0,
+        }
     }
 
     #[test]
     fn test_initialization() {
-        let (env, client, admin, _, agent_nft_id) = setup_test();
-
+        let (env, contract_id, admin) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
         assert_eq!(client.get_admin(), admin);
         assert_eq!(client.get_execution_counter(), 0);
-
-        // Check if agent nft address is stored correctly is implicit via get_agent_owner working later
+        assert_eq!(client.get_workflow_counter(), 0);
     }
 
     #[test]
-    #[should_panic(expected = "Contract already initialized")]
-    fn test_double_initialization() {
-        let (env, client, admin, _, agent_nft_id) = setup_test();
-        client.initialize(&admin, &agent_nft_id);
-    }
-
-    #[test]
-    fn test_execution_counter_increment() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-
-        // Set executor as owner of agent 1
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "test_action");
-        let params = Bytes::from_array(&env, &[1, 2, 3]);
-        let exec_hash = Bytes::from_array(&env, &[0xab, 0xcd, 0xef]);
-
-        let exec_id_1 = client.execute_action(&1, &executor, &action, &params, &1, &exec_hash);
-        assert_eq!(exec_id_1, 1);
-        assert_eq!(client.get_execution_counter(), 1);
-
-        let exec_hash_2 = Bytes::from_array(&env, &[0x12, 0x34, 0x56]);
-        let exec_id_2 = client.execute_action(&1, &executor, &action, &params, &2, &exec_hash_2);
-        assert_eq!(exec_id_2, 2);
-        assert_eq!(client.get_execution_counter(), 2);
-    }
-
-    #[test]
-    fn test_permission_checks() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let other = Address::generate(&env);
-
-        // Set owner for agent 1
-        agent_nft.set_owner(&1, &owner);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa]);
-
-        // 1. Owner can execute
-        client.execute_action(&1, &owner, &action, &params, &1, &exec_hash);
-
-        // 2. Non-owner cannot execute
-        // We expect panic here. Since we can't easily catch panic in the middle of a test without helper,
-        // we'll rely on separate tests or use verify_executed pattern if available.
-        // For now, let's just test success cases and create a separate test for failure.
-    }
-
-    #[test]
-    #[should_panic(expected = "Unauthorized: executor is not owner or operator")]
-    fn test_unauthorized_execution() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let other = Address::generate(&env);
-
-        agent_nft.set_owner(&1, &owner);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa]);
-
-        // Other tries to execute
-        client.execute_action(&1, &other, &action, &params, &1, &exec_hash);
-    }
-
-    #[test]
-    fn test_operator_delegation() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let operator = Address::generate(&env);
-
-        agent_nft.set_owner(&1, &owner);
-
-        // Authorize operator for 100 seconds
-        client.authorize_operator(&1, &owner, &operator, &100);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa]);
-
-        // Operator executes
-        client.execute_action(&1, &operator, &action, &params, &1, &exec_hash);
-
-        // Revoke
-        client.revoke_operator(&1, &owner);
-
-        // Should fail now (need separate test for panic)
-    }
-
-    #[test]
-    #[should_panic(expected = "Unauthorized: executor is not owner or operator")]
-    fn test_revoked_operator() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let operator = Address::generate(&env);
-
-        agent_nft.set_owner(&1, &owner);
-        client.authorize_operator(&1, &owner, &operator, &100);
-        client.revoke_operator(&1, &owner);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa]);
-
-        client.execute_action(&1, &operator, &action, &params, &1, &exec_hash);
-    }
-
-    #[test]
-    #[should_panic(expected = "Unauthorized: operator authorization expired")]
-    fn test_expired_operator() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let operator = Address::generate(&env);
-
-        agent_nft.set_owner(&1, &owner);
-
-        // Authorize for 10 seconds
-        client.authorize_operator(&1, &owner, &operator, &10);
-
-        // Advance time by 20 seconds
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa]);
-
-        client.execute_action(&1, &operator, &action, &params, &1, &exec_hash);
+    #[should_panic(expected = "Already initialized")]
+    fn test_double_init() {
+        let (env, contract_id, admin) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        client.initialize(&admin);
     }
 
     #[test]
     fn test_register_and_get_rule() {
-        let (env, client, _admin, _, _) = setup_test();
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
-
-        let rule_name = String::from_str(&env, "my_rule");
-        let rule_data = Bytes::from_array(&env, &[10, 20, 30]);
-
-        client.register_rule(&1, &owner, &rule_name, &rule_data);
-
-        let retrieved = client.get_rule(&1, &rule_name);
+        let rule_name = String::from_str(&env, "buy_rule");
+        let rule_data = Bytes::from_array(&env, &[1, 2, 3, 4]);
+        client.register_rule(&1u64, &owner, &rule_name, &rule_data);
+        let retrieved = client.get_rule(&1u64, &rule_name);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap(), rule_data);
     }
 
     #[test]
+    fn test_revoke_rule() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let rule_name = String::from_str(&env, "tmp_rule");
+        let rule_data = Bytes::from_array(&env, &[9, 8]);
+        client.register_rule(&2u64, &owner, &rule_name, &rule_data);
+        client.revoke_rule(&2u64, &owner, &rule_name);
+        assert!(client.get_rule(&2u64, &rule_name).is_none());
+    }
+
+    #[test]
+    fn test_execute_action_increments_counter() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let executor = Address::generate(&env);
+        let action = String::from_str(&env, "mint");
+        let params = Bytes::from_array(&env, &[0]);
+        let id1 = client.execute_action(&1u64, &executor, &action, &params, &1u64);
+        let id2 = client.execute_action(&1u64, &executor, &action, &params, &2u64);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
+
+    #[test]
     #[should_panic(expected = "Invalid nonce")]
     fn test_replay_protection() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
         let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "test");
+        let action = String::from_str(&env, "act");
         let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xaa, 0xbb]);
-
-        client.execute_action(&1, &executor, &action, &params, &1, &exec_hash);
-        client.execute_action(&1, &executor, &action, &params, &1, &exec_hash);
+        client.execute_action(&1u64, &executor, &action, &params, &5u64);
+        client.execute_action(&1u64, &executor, &action, &params, &5u64);
     }
 
     #[test]
     fn test_get_history() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
         let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "test_action");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash_1 = Bytes::from_array(&env, &[0x11, 0x22]);
-        let exec_hash_2 = Bytes::from_array(&env, &[0x33, 0x44]);
-
-        client.execute_action(&1, &executor, &action, &params, &1, &exec_hash_1);
-        client.execute_action(&1, &executor, &action, &params, &2, &exec_hash_2);
-
-        let history = client.get_history(&1, &10);
-        assert_eq!(history.len(), 2);
-        assert_eq!(client.get_action_count(&1), 2);
+        let action = String::from_str(&env, "do_thing");
+        let params = Bytes::from_array(&env, &[7]);
+        client.execute_action(&3u64, &executor, &action, &params, &1u64);
+        client.execute_action(&3u64, &executor, &action, &params, &2u64);
+        assert_eq!(client.get_history(&3u64, &10u32).len(), 2);
+        assert_eq!(client.get_action_count(&3u64), 2);
     }
 
     #[test]
     fn test_admin_transfer() {
-        let (env, client, admin1, _, _) = setup_test();
-        let admin2 = Address::generate(&env);
-
-        client.transfer_admin(&admin1, &admin2);
-        assert_eq!(client.get_admin(), admin2);
+        let (env, contract_id, admin) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.get_admin(), new_admin);
     }
 
     #[test]
-    fn test_rate_limiting() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
+    fn test_rate_limiting_low_volume() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
         let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-
-        for i in 1..=10 {
-            let exec_hash = Bytes::from_array(&env, &[i as u8, (i * 2) as u8]);
-            client.execute_action(&1, &executor, &action, &params, &i, &exec_hash);
-        }
-
-        let exec_hash_11 = Bytes::from_array(&env, &[11, 22]);
-        let result = client.execute_action(&1, &executor, &action, &params, &11, &exec_hash_11);
-        assert!(result > 0);
-    }
-
-    // Issue #10: Tests for execution receipt functionality
-    #[test]
-    fn test_execution_receipt_storage() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "transfer");
-        let params = Bytes::from_array(&env, &[1, 2, 3]);
-        let exec_hash = Bytes::from_array(&env, &[0xde, 0xad, 0xbe, 0xef]);
-
-        let exec_id = client.execute_action(&1, &executor, &action, &params, &1, &exec_hash);
-
-        // Verify receipt was stored
-        let receipt = client.get_execution_receipt(&exec_id);
-        assert!(receipt.is_some());
-
-        let receipt = receipt.unwrap();
-        assert_eq!(receipt.execution_id, exec_id);
-        assert_eq!(receipt.agent_id, 1);
-        assert_eq!(receipt.action, action);
-        assert_eq!(receipt.executor, executor);
-        assert_eq!(receipt.execution_hash, exec_hash);
-    }
-
-    #[test]
-    fn test_get_agent_for_execution() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&42, &executor);
-
-        let action = String::from_str(&env, "action");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0xca, 0xfe]);
-
-        let exec_id = client.execute_action(&42, &executor, &action, &params, &1, &exec_hash);
-
-        // Verify reverse lookup works
-        let agent_id = client.get_agent_for_execution(&exec_id);
-        assert!(agent_id.is_some());
-        assert_eq!(agent_id.unwrap(), 42);
-    }
-
-    #[test]
-    fn test_get_agent_receipts() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "batch_action");
-        let params = Bytes::from_array(&env, &[1]);
-
-        // Execute multiple actions for the same agent
-        for i in 1..=5u64 {
-            let exec_hash = Bytes::from_array(&env, &[i as u8, (i * 10) as u8]);
-            client.execute_action(&1, &executor, &action, &params, &i, &exec_hash);
-        }
-
-        // Get all receipts for agent
-        let receipts = client.get_agent_receipts(&1, &10);
-        assert_eq!(receipts.len(), 5);
-    }
-
-    #[test]
-    fn test_receipt_immutability() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        let action = String::from_str(&env, "immutable_test");
-        let params = Bytes::from_array(&env, &[1]);
-        let exec_hash = Bytes::from_array(&env, &[0x11, 0x22, 0x33]);
-
-        let exec_id = client.execute_action(&1, &executor, &action, &params, &1, &exec_hash);
-
-        // Get receipt
-        let receipt_1 = client.get_execution_receipt(&exec_id).unwrap();
-
-        // Execute another action
-        let exec_hash_2 = Bytes::from_array(&env, &[0x44, 0x55, 0x66]);
-        client.execute_action(&1, &executor, &action, &params, &2, &exec_hash_2);
-
-        // Original receipt should remain unchanged
-        let receipt_2 = client.get_execution_receipt(&exec_id).unwrap();
-        assert_eq!(receipt_1.execution_hash, receipt_2.execution_hash);
-        assert_eq!(receipt_1.timestamp, receipt_2.timestamp);
-    }
-
-    // --- Rate limit configuration tests ---
-
-    #[test]
-    fn test_rate_limit_config_storage_and_retrieval() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        // After init, get_rate_limit returns global default (100, 60 from lib)
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 100);
-        assert_eq!(config.window_seconds, 60);
-
-        // Set per-agent override
-        client.set_agent_rate_limit(&admin, &1, &200, &120);
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 200);
-        assert_eq!(config.window_seconds, 120);
-
-        // Agent 2 has no override, so gets global
-        let config2 = client.get_rate_limit(&2);
-        assert_eq!(config2.operations, 100);
-        assert_eq!(config2.window_seconds, 60);
-    }
-
-    #[test]
-    fn test_global_rate_limit_change() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        agent_nft.set_owner(&1, &Address::generate(&env));
-
-        client.set_global_rate_limit(&admin, &50, &300);
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 50);
-        assert_eq!(config.window_seconds, 300);
-    }
-
-    #[test]
-    fn test_agent_override_and_reset() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        agent_nft.set_owner(&1, &Address::generate(&env));
-
-        client.set_agent_rate_limit(&admin, &1, &500, &3600);
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 500);
-        assert_eq!(config.window_seconds, 3600);
-
-        client.reset_agent_rate_limit(&admin, &1);
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 100);
-        assert_eq!(config.window_seconds, 60);
-    }
-
-    #[test]
-    fn test_multiple_rate_limit_levels() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let exec1 = Address::generate(&env);
-        let exec2 = Address::generate(&env);
-        agent_nft.set_owner(&1, &exec1);
-        agent_nft.set_owner(&2, &exec2);
-
-        client.set_global_rate_limit(&admin, &10, &60);
-        client.set_agent_rate_limit(&admin, &1, &1000, &3600); // high-frequency agent
-
-        assert_eq!(client.get_rate_limit(&1).operations, 1000);
-        assert_eq!(client.get_rate_limit(&2).operations, 10);
-    }
-
-    #[test]
-    #[should_panic(expected = "Rate limit exceeded")]
-    fn test_rate_limit_integration_with_execution() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        client.set_global_rate_limit(&admin, &3, &60);
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-
-        for i in 1..=3u64 {
-            let h = Bytes::from_array(&env, &[i as u8, (i * 2) as u8]);
-            client.execute_action(&1, &executor, &action, &params, &i, &h);
-        }
-        let h4 = Bytes::from_array(&env, &[4, 8]);
-        client.execute_action(&1, &executor, &action, &params, &4, &h4);
-    }
-
-    #[test]
-    #[should_panic(expected = "operations must be greater than 0")]
-    fn test_rate_limit_zero_ops_panics() {
-        let (env, client, admin, _, _) = setup_test();
-        client.set_global_rate_limit(&admin, &0, &60);
-    }
-
-    #[test]
-    #[should_panic(expected = "window_seconds must be greater than 0")]
-    fn test_rate_limit_zero_window_panics() {
-        let (env, client, admin, _, _) = setup_test();
-        client.set_global_rate_limit(&admin, &100, &0);
-    }
-
-    #[test]
-    fn test_rate_limit_max_window_values() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        agent_nft.set_owner(&1, &Address::generate(&env));
-        client.set_global_rate_limit(&admin, &1, &u64::MAX);
-        let config = client.get_rate_limit(&1);
-        assert_eq!(config.operations, 1);
-        assert_eq!(config.window_seconds, u64::MAX);
-    }
-
-    #[test]
-    fn test_bypass_allows_over_limit() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
-
-        client.set_global_rate_limit(&admin, &2, &60);
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let reason = String::from_str(&env, "emergency maintenance");
-
-        let now = env.ledger().timestamp();
-        client.set_rate_limit_bypass(&admin, &1, &reason, &(now + 3600));
-
-        for i in 1..=5u64 {
-            let h = Bytes::from_array(&env, &[i as u8]);
-            let id = client.execute_action(&1, &executor, &action, &params, &i, &h);
-            assert!(id > 0);
+        let action = String::from_str(&env, "ping");
+        let params = Bytes::from_array(&env, &[0]);
+        for i in 1u64..=10 {
+            assert!(client.execute_action(&1u64, &executor, &action, &params, &i) > 0);
         }
     }
 
+    // ── Workflow tests ────────────────────────────────────────────────────────
+
     #[test]
-    #[should_panic(expected = "Rate limit exceeded")]
-    fn test_bypass_cleared_then_limit_applies() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let executor = Address::generate(&env);
-        agent_nft.set_owner(&1, &executor);
+    fn test_create_workflow_assigns_id() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "do_work", true));
 
-        client.set_global_rate_limit(&admin, &1, &60);
-        let action = String::from_str(&env, "test");
-        let params = Bytes::from_array(&env, &[1]);
-        let reason = String::from_str(&env, "brief bypass");
-        let now = env.ledger().timestamp();
-        client.set_rate_limit_bypass(&admin, &1, &reason, &(now + 3600));
-        let h1 = Bytes::from_array(&env, &[1]);
-        client.execute_action(&1, &executor, &action, &params, &1, &h1);
+        let wf_id = client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "test_wf"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
+        assert_eq!(wf_id, 1u64);
+        assert_eq!(client.get_workflow_counter(), 1u64);
 
-        client.clear_rate_limit_bypass(&admin, &1);
-        let h2 = Bytes::from_array(&env, &[2]);
-        client.execute_action(&1, &executor, &action, &params, &2, &h2);
-        let h3 = Bytes::from_array(&env, &[3]);
-        client.execute_action(&1, &executor, &action, &params, &3, &h3);
+        let wf = client.get_workflow(&wf_id);
+        assert_eq!(wf.status, WorkflowStatus::Pending);
+        assert_eq!(wf.completed_steps, 0u32);
     }
 
     #[test]
-    #[should_panic(expected = "valid_until must be in the future")]
-    fn test_bypass_valid_until_must_be_future() {
-        let (env, client, admin, _, _) = setup_test();
-        let reason = String::from_str(&env, "reason");
-        let now = env.ledger().timestamp();
-        client.set_rate_limit_bypass(&admin, &1, &reason, &now);
+    fn test_workflow_history_tracked_per_initiator() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "noop", true));
+
+        client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "wf_a"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
+        client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "wf_b"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
+
+        let history = client.get_workflow_history(&initiator);
+        assert_eq!(history.len(), 2u32);
     }
 
     #[test]
-    #[should_panic(expected = "Unauthorized: caller is not admin")]
-    fn test_set_global_rate_limit_non_admin_panics() {
-        let (env, client, _admin, _, _) = setup_test();
-        let other = Address::generate(&env);
-        client.set_global_rate_limit(&other, &50, &60);
-    }
+    fn test_workflow_deadline_stored() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        env.ledger().set_timestamp(1_000_000);
 
-    // Issue #216: Tests for batch operations with user authentication
-    #[test]
-    fn test_batch_atomic_with_authentication() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        agent_nft.set_owner(&1, &owner);
-        agent_nft.set_owner(&2, &owner);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "x", true));
 
-        // Create batch operations
-        let mut operations = Vec::new(&env);
-
-        let action1 = String::from_str(&env, "action1");
-        let params1 = Bytes::from_array(&env, &[1, 2, 3]);
-        let hash1 = Bytes::from_array(&env, &[0x11, 0x22]);
-
-        let action2 = String::from_str(&env, "action2");
-        let params2 = Bytes::from_array(&env, &[4, 5, 6]);
-        let hash2 = Bytes::from_array(&env, &[0x33, 0x44]);
-
-        let op1 = BatchOperation {
-            agent_id: 1,
-            action: action1,
-            parameters: params1,
-            nonce: 1,
-            execution_hash: hash1,
-        };
-
-        let op2 = BatchOperation {
-            agent_id: 2,
-            action: action2,
-            parameters: params2,
-            nonce: 1,
-            execution_hash: hash2,
-        };
-
-        operations.push_back(op1);
-        operations.push_back(op2);
-
-        // Execute batch as authenticated owner
-        let execution_ids = client.execute_batch_atomic(&owner, &operations);
-        assert_eq!(execution_ids.len(), 2);
-        assert_eq!(execution_ids.get(0).unwrap(), 1);
-        assert_eq!(execution_ids.get(1).unwrap(), 2);
+        let wf_id = client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "dl_wf"),
+            &steps,
+            &Some(600u64),
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_workflow(&wf_id).deadline, 1_000_600u64);
     }
 
     #[test]
-    #[should_panic(expected = "Unauthorized: executor is not owner or operator")]
-    fn test_batch_atomic_unauthorized_fails() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let unauthorized = Address::generate(&env);
-        agent_nft.set_owner(&1, &owner);
+    fn test_context_tag_stored() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "x", true));
+        let tag = Some(String::from_str(&env, "listing:42"));
 
-        // Create batch operations
-        let mut operations = Vec::new(&env);
-
-        let action = String::from_str(&env, "action");
-        let params = Bytes::from_array(&env, &[1]);
-        let hash = Bytes::from_array(&env, &[0x11]);
-
-        let op = BatchOperation {
-            agent_id: 1,
-            action,
-            parameters: params,
-            nonce: 1,
-            execution_hash: hash,
-        };
-
-        operations.push_back(op);
-
-        // Attempt to execute batch as unauthorized user - should panic
-        client.execute_batch_atomic(&unauthorized, &operations);
+        let wf_id = client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "tag_wf"),
+            &steps,
+            &None,
+            &tag,
+            &None,
+        );
+        let wf = client.get_workflow(&wf_id);
+        assert_eq!(wf.context_tag, Some(String::from_str(&env, "listing:42")));
     }
 
     #[test]
-    fn test_batch_best_effort_with_authentication() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        agent_nft.set_owner(&1, &owner);
-        agent_nft.set_owner(&2, &owner);
+    #[should_panic(expected = "Workflow must have at least one step")]
+    fn test_empty_workflow_rejected() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "empty"),
+            &Vec::new(&env),
+            &None,
+            &None,
+            &None,
+        );
+    }
 
-        // Create batch operations
-        let mut operations = Vec::new(&env);
-
-        for i in 1..=3u32 {
-            let action = String::from_str(&env, &format!("action_{}", i));
-            let params = Bytes::from_array(&env, &[i as u8]);
-            let hash = Bytes::from_array(&env, &[i as u8, 0x00]);
-
-            let op = BatchOperation {
-                agent_id: if i % 2 == 1 { 1 } else { 2 },
-                action,
-                parameters: params,
-                nonce: i as u64,
-                execution_hash: hash,
-            };
-
-            operations.push_back(op);
+    #[test]
+    #[should_panic(expected = "Too many workflow steps")]
+    fn test_too_many_steps_rejected() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        for i in 0..=10u32 {
+            steps.push_back(make_step(&env, i, &target, "x", true));
         }
-
-        // Execute batch as authenticated owner
-        let results = client.execute_batch_best_effort(&owner, &operations);
-        assert_eq!(results.len(), 3);
-
-        // All should succeed
-        for i in 0..3u32 {
-            let result = results.get(i).unwrap();
-            assert!(result.success, "Operation {} should succeed", i);
-        }
+        client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "too_many"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Unauthorized: executor is not owner or operator")]
-    fn test_batch_best_effort_unauthorized_fails() {
-        let (env, client, _admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        let unauthorized = Address::generate(&env);
-        agent_nft.set_owner(&1, &owner);
+    fn test_workflow_status_query() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "x", true));
 
-        // Create batch operations
-        let mut operations = Vec::new(&env);
-
-        let action = String::from_str(&env, "action");
-        let params = Bytes::from_array(&env, &[1]);
-        let hash = Bytes::from_array(&env, &[0x11]);
-
-        let op = BatchOperation {
-            agent_id: 1,
-            action,
-            parameters: params,
-            nonce: 1,
-            execution_hash: hash,
-        };
-
-        operations.push_back(op);
-
-        // Attempt to execute batch as unauthorized user - should panic
-        client.execute_batch_best_effort(&unauthorized, &operations);
+        let wf_id = client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "stat_wf"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
+        assert_eq!(client.get_workflow_status(&wf_id), WorkflowStatus::Pending);
     }
 
     #[test]
-    fn test_batch_respects_rate_limiting() {
-        let (env, client, admin, agent_nft, _) = setup_test();
-        let owner = Address::generate(&env);
-        agent_nft.set_owner(&1, &owner);
-
-        // Set very low rate limit
-        client.set_global_rate_limit(&admin, &2, &60);
-
-        // Create batch with 2 operations (within limit)
-        let mut operations = Vec::new(&env);
-
-        for i in 1..=2u32 {
-            let action = String::from_str(&env, &format!("action_{}", i));
-            let params = Bytes::from_array(&env, &[i as u8]);
-            let hash = Bytes::from_array(&env, &[i as u8]);
-
-            let op = BatchOperation {
-                agent_id: 1,
-                action,
-                parameters: params,
-                nonce: i as u64,
-                execution_hash: hash,
-            };
-
-            operations.push_back(op);
-        }
-
-        // Should succeed
-        let execution_ids = client.execute_batch_atomic(&owner, &operations);
-        assert_eq!(execution_ids.len(), 2);
+    #[should_panic(expected = "Unauthorized: only initiator or admin can cancel")]
+    fn test_cancel_unauthorized() {
+        let (env, contract_id, _) = setup();
+        let client = ExecutionHubClient::new(&env, &contract_id);
+        let initiator = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let target = Address::generate(&env);
+        let mut steps = Vec::new(&env);
+        steps.push_back(make_step(&env, 0, &target, "x", true));
+        let wf_id = client.create_workflow(
+            &initiator,
+            &String::from_str(&env, "c_wf"),
+            &steps,
+            &None,
+            &None,
+            &None,
+        );
+        client.cancel_workflow(&wf_id, &stranger);
     }
 }

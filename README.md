@@ -1,6 +1,6 @@
-# stellAIverse-contracts (Soroban / Stellar)
+# AIverse-contracts (Soroban / Stellar)
 
-StellAIverse — Core Soroban smart contracts in Rust
+AIverse — Core Soroban smart contracts in Rust
 
 Legacy Notice
 
@@ -8,10 +8,10 @@ Legacy Notice
 - Use `contracts/` for all active development and deployment.
 
 Purpose
-This repository contains the on-chain logic for StellAIverse: tokenized AI Agents, an execution hub for agent actions, a marketplace, an evolution/upgrades system (staking-driven), oracle integration, and developer tooling & tests for Soroban on Stellar.
+This repository contains the on-chain logic for AIverse: tokenized AI Agents, an execution hub for agent actions, a marketplace, an evolution/upgrades system (staking-driven), oracle integration, and developer tooling & tests for Soroban on Stellar.
 
 Badges
-[![Build Status](https://img.shields.io/badge/build-unknown-lightgrey)](https://github.com/StellAIverse/stellAIverse-contracts/actions)
+[![Build Status](https://img.shields.io/badge/build-unknown-lightgrey)](https://github.com/redux-space/AIverse-contracts/actions)
 [![Coverage Status](https://img.shields.io/badge/coverage-unknown-lightgrey)](#)
 [![Audit](https://img.shields.io/badge/audit-pending-orange)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue)](#license)
@@ -33,7 +33,7 @@ Table of contents
 - License & contact
 
 Overview
-StellAIverse tokenizes AI Agents so they can be owned, traded, leased, and upgraded on Stellar (Soroban). Agents are represented as NFTs or custom assets with structured metadata (model hashes, capabilities, evolution level). Off-chain compute (AI training, inference) is coordinated with on-chain state through secure attestations / oracles.
+AIverse tokenizes AI Agents so they can be owned, traded, leased, and upgraded on Stellar (Soroban). Agents are represented as NFTs or custom assets with structured metadata (model hashes, capabilities, evolution level). Off-chain compute (AI training, inference) is coordinated with on-chain state through secure attestations / oracles.
 
 Key contracts & responsibilities
 Replace names below with the repository's actual contract filenames and modules.
@@ -62,6 +62,19 @@ Replace names below with the repository's actual contract filenames and modules.
   - List/buy/sell/auction and lease logic.
   - Encodes royalty logic and marketplace fees.
   - Supports instant purchases and escrowed trades.
+
+- MultiSigWallet (multisig-wallet)
+  - M-of-N treasury wallet for Soroban-compatible token custody.
+  - Supports signer management, transaction submission, confirmation, revocation, nonce-ordered execution, daily spending limits, whitelisted recipients, and execution history.
+
+- TokenVesting (token-vesting)
+  - Custodies Soroban-compatible tokens for linear vesting schedules.
+  - Supports cliffs, batch beneficiary schedules, beneficiary claims, admin schedule edits, revocation, and early withdrawal penalties.
+  - Emits lifecycle events for schedule creation, claims, batch funding, modifications, revocations, and early exits.
+
+- MembershipSubscription (membership-subscription)
+  - Tiered membership contract for recurring Soroban token subscriptions.
+  - Supports trials, pull-based renewals, cancellation refunds, pause/resume, tier changes with proration, referral rewards, benefit entitlement checks, and subscription analytics.
 
 - EvolutionManager (evolution)
   - Staking-driven upgrade system: users stake XLM or platform tokens to initiate training.
