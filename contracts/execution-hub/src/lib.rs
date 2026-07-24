@@ -5,8 +5,15 @@ use soroban_sdk::{
 };
 
 use stellai_lib::{
+<<<<<<< HEAD
+    admin, rbac, storage_keys::EXEC_CTR_KEY, validation, AnomalyScore,
+    AnomalySeverity, BehaviorProfile, ProposalStatus, ThresholdKeyShare, ThresholdProposal,
+    ADMIN_KEY, DEFAULT_RATE_LIMIT_OPERATIONS, DEFAULT_RATE_LIMIT_WINDOW_SECONDS, MAX_DATA_SIZE,
+    MAX_HISTORY_QUERY_LIMIT, MAX_HISTORY_SIZE, MAX_STRING_LENGTH,
+=======
     OptionalWorkflowCallback, WorkflowCallback, WorkflowInstance, WorkflowStatus, WorkflowStep,
     WorkflowStepStatus, WorkflowSummary,
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -758,10 +765,888 @@ impl ExecutionHub {
         let admin: Address = env
             .storage()
             .instance()
+<<<<<<< HEAD
+            .get(&agent_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if history.len() >= MAX_HISTORY_SIZE {
+            panic!("Action history limit exceeded");
+        }
+
+        let timestamp = env.ledger().timestamp();
+        let record = ActionRecord {
+            execution_id,
+            agent_id,
+            action: action.clone(),
+            executor: executor.clone(),
+            timestamp,
+            nonce,
+            execution_hash: execution_hash.clone(),
+        };
+
+        history.push_back(record);
+        env.storage().instance().set(&agent_key, &history);
+    }
+
+    /// Helper: store immutable execution receipt (Issue #10)
+    /// Receipts are stored separately and cannot be modified after creation
+    fn store_execution_receipt(
+        env: &Env,
+        execution_id: u64,
+        agent_id: u64,
+        action: &String,
+        executor: &Address,
+        timestamp: u64,
+        execution_hash: &Bytes,
+    ) {
+        let receipt_key = symbol_short!("receipt");
+        let exec_receipt_key = (receipt_key, execution_id);
+
+        // Create immutable receipt
+        let receipt = ExecutionReceipt {
+            execution_id,
+            agent_id,
+            action: action.clone(),
+            executor: executor.clone(),
+            timestamp,
+            execution_hash: execution_hash.clone(),
+            created_at: env.ledger().timestamp(),
+        };
+
+        // Store receipt - immutable after creation
+        env.storage().instance().set(&exec_receipt_key, &receipt);
+
+        // Map execution ID to agent for reverse lookups
+        let exec_agent_key = symbol_short!("exagent");
+        let exec_to_agent_key = (exec_agent_key, execution_id);
+        env.storage().instance().set(&exec_to_agent_key, &agent_id);
+    }
+
+    // Helper: check rate limit (uses effective config; skips if bypass active)
+    fn check_rate_limit(env: &Env, agent_id: u64) {
+        if Self::has_active_bypass(env, agent_id) {
+            return;
+        }
+        let config = Self::get_effective_rate_limit(env, agent_id);
+        let max_operations = config.operations;
+        let window_seconds = config.window_seconds;
+
+        let now = env.ledger().timestamp();
+        let limit_key = symbol_short!("ratelim");
+        let agent_limit_key = (limit_key, agent_id);
+
+        let rate_data: Option<RateLimitData> = env.storage().instance().get(&agent_limit_key);
+        let (last_reset, count) = match rate_data {
+            Some(data) => (data.last_reset, data.count),
+            None => (now, 0),
+        };
+
+        let elapsed = now.saturating_sub(last_reset);
+
+        let (new_reset, new_count) = if elapsed > window_seconds {
+            (now, 1)
+        } else if count < max_operations {
+            (last_reset, count + 1)
+        } else {
+            panic!("Rate limit exceeded");
+        };
+
+        let new_rate_data = RateLimitData {
+            last_reset: new_reset,
+            count: new_count,
+        };
+
+        env.storage()
+            .instance()
+            .set(&agent_limit_key, &new_rate_data);
+    }
+
+    // Helper: behavior profile storage key prefix is symbol "bp"
+    fn get_behavior_profile(env: &Env, agent_id: u64) -> Option<BehaviorProfile> {
+        let key = symbol_short!("bp");
+        let agent_key = (key, agent_id);
+        env.storage().instance().get(&agent_key)
+    }
+
+    fn set_behavior_profile(env: &Env, profile: &BehaviorProfile) {
+        let key = symbol_short!("bp");
+        let agent_key = (key, profile.agent_id);
+        env.storage().instance().set(&agent_key, profile);
+    }
+
+    fn add_behavior_history_entry(env: &Env, agent_id: u64, entry: &BehaviorProfile) {
+        let key = symbol_short!("bph");
+        let agent_key = (key, agent_id);
+        let mut history: Vec<BehaviorProfile> = env
+            .storage()
+            .instance()
+            .get(&agent_key)
+            .unwrap_or_else(|| Vec::new(env));
+        if history.len() >= 1000 {
+            // cap history
+            history.remove(0);
+        }
+        history.push_back(entry.clone());
+        env.storage().instance().set(&agent_key, &history);
+    }
+
+    // Update the behavior profile with a new operation, compute anomaly score, and apply adaptive limits
+    fn update_behavior_profile(env: &Env, agent_id: u64, action: String, execution_cost: i128) {
+        let mut profile = if let Some(p) = Self::get_behavior_profile(env, agent_id) {
+            p
+        } else {
+            // Initialize with empty 24-hour window
+            let mut v = Vec::new(&env);
+            for _ in 0..24 {
+                v.push_back(0u32);
+            }
+            BehaviorProfile {
+                agent_id,
+                operations_per_hour: v,
+                avg_execution_cost: execution_cost,
+                action_type_distribution: Vec::new(&env),
+                last_updated: env.ledger().timestamp(),
+                learning_count: 0,
+                profile_frozen: false,
+            }
+        };
+
+        if profile.profile_frozen {
+            return;
+        }
+
+        let now = env.ledger().timestamp();
+        let current_hour = now / 3600;
+        let last_hour = profile.last_updated / 3600;
+        let elapsed_hours = if now > profile.last_updated {
+            (current_hour as i128 - last_hour as i128) as i64
+        } else {
+            0
+        };
+
+        // Shift operations_per_hour if time advanced
+        if elapsed_hours > 0 {
+            let mut slots_to_shift = elapsed_hours as u32;
+            if slots_to_shift >= 24 {
+                // reset
+                let mut newv = Vec::new(&env);
+                for _ in 0..24 {
+                    newv.push_back(0u32);
+                }
+                profile.operations_per_hour = newv;
+            } else {
+                // rotate left and zero-fill latest slots
+                let mut newv = Vec::new(&env);
+                for _ in 0..24 {
+                    newv.push_back(0u32);
+                }
+                let mut idx = 0u32;
+                for i in slots_to_shift..24 {
+                    if let Some(val) = profile.operations_per_hour.get(idx) {
+                        newv.push_back(val);
+                    }
+                    idx += 1;
+                }
+                profile.operations_per_hour = newv;
+            }
+        }
+
+        // Increment current hour count
+        let mut ops_vec = profile.operations_per_hour.clone();
+        let last_index = ops_vec.len().saturating_sub(1);
+        let mut cur_count = ops_vec.get(last_index).unwrap_or(0u32);
+        cur_count = cur_count.saturating_add(1);
+        ops_vec.set(last_index, cur_count);
+        profile.operations_per_hour = ops_vec;
+
+        // Update running average execution cost (learning window up to 100)
+        if profile.learning_count < 100 {
+            let lc = profile.learning_count as i128;
+            profile.avg_execution_cost =
+                ((profile.avg_execution_cost * lc) + execution_cost) / (lc + 1);
+            profile.learning_count += 1;
+        } else {
+            // simple EWMA decay
+            profile.avg_execution_cost = (profile.avg_execution_cost * 9 + execution_cost) / 10;
+        }
+
+        profile.last_updated = now;
+
+        // Compute weighted mean and stddev for operations_per_hour
+        let mut sum: i128 = 0;
+        let mut count: i128 = 0;
+        let mut weights_sum: i128 = 0;
+        let mut weighted_vals: Vec<i128> = Vec::new(&env);
+        for i in 0..24 {
+            let idx = i as u32;
+            let val = profile.operations_per_hour.get(idx).unwrap_or(0u32) as i128;
+            let weight = (24 - i) as i128; // recent hours get higher weight
+            weighted_vals.push_back(val * weight);
+            sum += val * weight;
+            weights_sum += weight;
+            count += 1;
+        }
+        let mean = if weights_sum > 0 {
+            sum / weights_sum
+        } else {
+            0
+        };
+
+        // variance
+        let mut var_sum: i128 = 0;
+        for i in 0..24 {
+            let idx = i as u32;
+            let val = profile.operations_per_hour.get(idx).unwrap_or(0u32) as i128;
+            let w = (24 - i) as i128;
+            let diff = val - mean;
+            var_sum += w * diff * diff;
+        }
+        let variance = if weights_sum > 0 {
+            var_sum / weights_sum
+        } else {
+            0
+        };
+
+        // integer sqrt for stddev
+        fn isqrt(mut x: i128) -> i128 {
+            if x <= 0 {
+                return 0;
+            }
+            let mut z = x;
+            let mut y = (x + 1) / 2;
+            while y < z {
+                z = y;
+                y = (x / y + y) / 2;
+            }
+            z
+        }
+
+        let stddev = isqrt(variance);
+
+        // Frequency z (scaled by 100): abs(current - mean) *100 / (stddev +1)
+        let current = profile
+            .operations_per_hour
+            .get(profile.operations_per_hour.len().saturating_sub(1))
+            .unwrap_or(0u32) as i128;
+        let freq_z_bp = if stddev > 0 {
+            (if current > mean {
+                current - mean
+            } else {
+                mean - current
+            }) * 100
+                / (stddev + 1)
+        } else {
+            ((if current > mean {
+                current - mean
+            } else {
+                mean - current
+            }) * 100)
+        };
+
+        // Cost z: deviation relative to cost std (approx as 10% of avg or 1)
+        let cost_std = if profile.avg_execution_cost.abs() / 10 > 0 {
+            profile.avg_execution_cost.abs() / 10
+        } else {
+            1
+        };
+        let cost_dev = if execution_cost > profile.avg_execution_cost {
+            execution_cost - profile.avg_execution_cost
+        } else {
+            profile.avg_execution_cost - execution_cost
+        };
+        let cost_z_bp = (cost_dev * 100) / (cost_std + 1);
+
+        // Combine signals: 70% freq, 30% cost
+        let combined_bp = (freq_z_bp * 70 + cost_z_bp * 30) / 100;
+
+        // default threshold 300 (3 sigma)
+        let threshold_bp: i128 = 300;
+
+        if combined_bp > threshold_bp {
+            // determine severity
+            let severity = if combined_bp >= 1000 {
+                AnomalySeverity::High
+            } else if combined_bp >= 500 {
+                AnomalySeverity::Medium
+            } else {
+                AnomalySeverity::Low
+            };
+            let reason = String::from_str(env, "behavioral anomaly detected");
+            let score = AnomalyScore {
+                score: combined_bp,
+                anomaly_reason: reason.clone(),
+                severity,
+            };
+
+            // emit event
+            env.events().publish(
+                (symbol_short!("anom"),),
+                (agent_id, combined_bp, severity as u32),
+            );
+
+            // Apply adaptive rate limits: Medium -> 50%, High -> 10%
+            let mut effective = Self::get_effective_rate_limit(env, agent_id);
+            let original_ops = effective.operations;
+            if severity == AnomalySeverity::Medium {
+                effective.operations = core::cmp::max(1, (original_ops / 2));
+            } else if severity == AnomalySeverity::High {
+                effective.operations = core::cmp::max(1, (original_ops / 10));
+            }
+            // persist agent override
+            let agent_key = (symbol_short!("rate_ag"), agent_id);
+            env.storage().instance().set(&agent_key, &effective);
+        }
+
+        // store updated profile and append to history
+        Self::set_behavior_profile(env, &profile);
+        Self::add_behavior_history_entry(env, agent_id, &profile);
+    }
+
+    /// Admin: manually override a behavior profile (freeze/unfreeze or replace)
+    pub fn override_behavior_profile(env: Env, admin: Address, profile: BehaviorProfile) {
+        admin.require_auth();
+        Self::verify_admin(&env, &admin);
+        Self::set_behavior_profile(&env, &profile);
+        env.events()
+            .publish((symbol_short!("bp_ovr"),), (profile.agent_id,));
+    }
+
+    // --- Threshold keyshare APIs ---
+    pub fn create_threshold_agent(
+        env: Env,
+        admin_addr: Address,
+        agent_id: u64,
+        threshold_m: u32,
+        n_parties: u32,
+        shares: Vec<ThresholdKeyShare>,
+    ) {
+        admin_addr.require_auth();
+
+        if shares.len() as u32 != n_parties {
+            panic!("shares length must equal n_parties");
+        }
+        if threshold_m == 0 || threshold_m > n_parties {
+            panic!("invalid threshold");
+        }
+
+        // store shares vector under key (tshares, agent_id)
+        let key = symbol_short!("tshares");
+        let agent_key = (key, agent_id);
+        env.storage().instance().set(&agent_key, &shares);
+
+        // store agent metadata
+        let meta_key = (symbol_short!("tmeta"), agent_id);
+        env.storage()
+            .instance()
+            .set(&meta_key, &(threshold_m, n_parties));
+
+        env.events().publish(
+            (symbol_short!("th_agent"),),
+            (agent_id, threshold_m, n_parties),
+        );
+    }
+
+    pub fn propose_action(env: Env, proposer: Address, agent_id: u64, action_data: Bytes) -> u64 {
+        proposer.require_auth();
+
+        // generate proposal id
+        let ctr_key = symbol_short!("th_ctr");
+        let mut ctr: u64 = env.storage().instance().get(&ctr_key).unwrap_or(0u64);
+        ctr += 1;
+        env.storage().instance().set(&ctr_key, &ctr);
+
+        // read agent threshold
+        let meta_key = (symbol_short!("tmeta"), agent_id);
+        let meta: Option<(u32, u32)> = env.storage().instance().get(&meta_key);
+        if meta.is_none() {
+            panic!("unknown threshold agent");
+        }
+        let (threshold_m, _n) = meta.unwrap();
+
+        let proposal = ThresholdProposal {
+            proposal_id: ctr,
+            agent_id,
+            action_data: action_data.clone(),
+            proposer: proposer.clone(),
+            threshold_m,
+            signers: Vec::new(&env),
+            status: ProposalStatus::Pending,
+            created_at: env.ledger().timestamp(),
+        };
+
+        let pkey = (symbol_short!("tprop"), ctr);
+        env.storage().instance().set(&pkey, &proposal);
+        env.events()
+            .publish((symbol_short!("prop"),), (ctr, agent_id));
+        ctr
+    }
+
+    pub fn sign_proposal(env: Env, signer: Address, proposal_id: u64, signature: Bytes) {
+        signer.require_auth();
+
+        let pkey = (symbol_short!("tprop"), proposal_id);
+        let mut proposal: ThresholdProposal = env
+            .storage()
+            .instance()
+            .get(&pkey)
+            .expect("proposal not found");
+        if proposal.status != ProposalStatus::Pending {
+            panic!("proposal not pending");
+        }
+
+        // verify signer is a registered share holder
+        let shares_key = (symbol_short!("tshares"), proposal.agent_id);
+        let shares: Vec<ThresholdKeyShare> = env
+            .storage()
+            .instance()
+            .get(&shares_key)
+            .expect("no shares for agent");
+        let mut allowed = false;
+        for s in shares.iter() {
+            if s.share_holder == signer {
+                allowed = true;
+                break;
+            }
+        }
+        if !allowed {
+            panic!("signer is not a share holder");
+        }
+
+        // store signature bytes for later aggregation
+        let sig_key = (symbol_short!("psig"), proposal_id, signer.clone());
+        env.storage().instance().set(&sig_key, &signature);
+
+        // add signer to proposal signers list if not already present
+        let mut signers = proposal.signers.clone();
+        if !signers.iter().any(|a| a == signer) {
+            signers.push_back(signer.clone());
+            proposal.signers = signers;
+            env.storage().instance().set(&pkey, &proposal);
+        }
+
+        env.events()
+            .publish((symbol_short!("psigned"),), (proposal_id, signer.clone()));
+
+        // if enough signatures, execute
+        let unique_signers = proposal.signers.len() as u32;
+        if unique_signers >= proposal.threshold_m {
+            // mark executed
+            proposal.status = ProposalStatus::Executed;
+            env.storage().instance().set(&pkey, &proposal);
+            // emit executed event and call execution hook (off-chain aggregation expected)
+            env.events().publish(
+                (symbol_short!("th_exec"),),
+                (proposal_id, proposal.agent_id),
+            );
+        }
+    }
+
+    pub fn get_threshold_status(env: Env, agent_id: u64) -> (u32, u32, u32) {
+        let meta_key = (symbol_short!("tmeta"), agent_id);
+        let meta: Option<(u32, u32)> = env.storage().instance().get(&meta_key);
+        if let Some((threshold_m, n)) = meta {
+            let shares_key = (symbol_short!("tshares"), agent_id);
+            let shares: Vec<ThresholdKeyShare> = env
+                .storage()
+                .instance()
+                .get(&shares_key)
+                .unwrap_or_else(|| Vec::new(&env));
+            (threshold_m, n, shares.len() as u32)
+        } else {
+            (0, 0, 0)
+        }
+    }
+
+    pub fn revoke_share(env: Env, admin_addr: Address, agent_id: u64, holder: Address) {
+        admin_addr.require_auth();
+        Self::verify_admin(&env, &admin_addr);
+        let shares_key = (symbol_short!("tshares"), agent_id);
+        let mut shares: Vec<ThresholdKeyShare> = env
+            .storage()
+            .instance()
+            .get(&shares_key)
+            .expect("no shares for agent");
+        let mut newv = Vec::new(&env);
+        for s in shares.iter() {
+            if s.share_holder != holder {
+                newv.push_back(s.clone());
+            }
+        }
+        env.storage().instance().set(&shares_key, &newv);
+        env.events()
+            .publish((symbol_short!("th_revoke"),), (agent_id, holder));
+    }
+
+    /// Submit M decrypted shares (y_values) and proofs for recovery. This function verifies commitments
+    /// of the provided share indices against stored commitments and emits `th_recovery_ready` when
+    /// threshold is satisfied. Actual Shamir recombination is expected off-chain using the supplied shares.
+    pub fn submit_recovery_shares(
+        env: Env,
+        submitter: Address,
+        agent_id: u64,
+        share_indices: Vec<u32>,
+        y_values: Vec<Bytes>,
+        proofs: Vec<Bytes>,
+    ) {
+        submitter.require_auth();
+
+        // load meta
+        let meta_key = (symbol_short!("tmeta"), agent_id);
+        let meta: Option<(u32, u32)> = env.storage().instance().get(&meta_key);
+        if meta.is_none() {
+            panic!("unknown threshold agent");
+        }
+        let (threshold_m, _n) = meta.unwrap();
+
+        let count = share_indices.len();
+        if count == 0 || count != y_values.len() || count != proofs.len() {
+            panic!("invalid recovery input lengths");
+        }
+
+        if (count as u32) < threshold_m {
+            panic!("not enough shares provided");
+        }
+
+        // validate proofs against stored commitments
+        let shares_key = (symbol_short!("tshares"), agent_id);
+        let shares: Vec<ThresholdKeyShare> = env
+            .storage()
+            .instance()
+            .get(&shares_key)
+            .expect("no shares for agent");
+
+        // build map from index -> commitment
+        let mut commit_map: Map<u32, Bytes> = Map::new(&env);
+        for s in shares.iter() {
+            commit_map.set(s.share_index, s.commitment.clone());
+        }
+
+        for i in 0..(count as u32) {
+            let idx = share_indices.get(i).expect("index missing");
+            let proof = proofs.get(i).expect("proof missing");
+            // compare provided proof to stored commitment
+            if let Some(stored) = commit_map.get(idx) {
+                if stored != proof {
+                    panic!("commitment verification failed for share");
+                }
+            } else {
+                panic!("unknown share index");
+            }
+        }
+
+        // store recovery attempt under (trec, agent_id, submitter)
+        let rec_key = (symbol_short!("trec"), agent_id, submitter.clone());
+        let payload = (
+            share_indices.clone(),
+            y_values.clone(),
+            env.ledger().timestamp(),
+        );
+        env.storage().instance().set(&rec_key, &payload);
+
+        // emit event to indicate recovery ready; off-chain can listen and perform interpolation
+        env.events().publish(
+            (symbol_short!("th_rec"),),
+            (agent_id, submitter, share_indices.len() as u32),
+        );
+    }
+
+    /// Helper: Get agent owner from AgentNFT contract
+    fn get_agent_owner(env: &Env, agent_id: u64) -> Address {
+        let agent_nft_addr: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, AGENT_NFT_KEY))
+            .expect("AgentNFT contract not set");
+
+        // Call AgentNFT.get_agent_owner(agent_id)
+        env.invoke_contract(
+            &agent_nft_addr,
+            &Symbol::new(env, "get_agent_owner"),
+            Vec::from_array(env, [agent_id.into_val(env)]),
+        )
+    }
+
+    /// Execute multiple operations atomically with user authentication (Issue #216)
+    /// All operations must succeed or none are executed
+    ///
+    /// # Arguments
+    /// * `executor` - Address of the executor (must be authenticated)
+    /// * `operations` - Vector of batch operations to execute
+    ///
+    /// # Returns
+    /// Vector of execution IDs for each operation
+    pub fn execute_batch_atomic(
+        env: Env,
+        executor: Address,
+        operations: Vec<BatchOperation>,
+    ) -> Vec<u64> {
+        // CRITICAL: Authenticate user at start of batch function (Issue #216)
+        executor.require_auth();
+
+        if operations.len() == 0 {
+            panic!("Batch must contain at least one operation");
+        }
+
+        if operations.len() > 10 {
+            panic!("Batch size exceeds maximum (10 operations)");
+        }
+
+        // Verify all operations belong to authenticated user
+        for i in 0..operations.len() {
+            let op = operations.get(i).expect("Operation missing");
+
+            // Permission Check: re-validate owner/operator from storage (Issue #152)
+            rbac::require_owner_or_operator(
+                &env,
+                &executor,
+                op.agent_id,
+                |e, id| {
+                    let owner = Self::get_agent_owner(e, id);
+                    Some(owner)
+                },
+                |e, id| {
+                    let op_key = symbol_short!("op");
+                    let agent_op_key = (op_key, id);
+                    e.storage()
+                        .instance()
+                        .get::<_, OperatorData>(&agent_op_key)
+                        .map(|d| (d.operator, d.expires_at))
+                },
+            )
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Unauthorized: executor is not owner or operator for agent {}",
+                    op.agent_id
+                )
+            });
+        }
+
+        // Apply rate limiting to batch operations (Issue #216)
+        for i in 0..operations.len() {
+            let op = operations.get(i).expect("Operation missing");
+            Self::check_rate_limit(&env, op.agent_id);
+        }
+
+        // Execute all operations atomically
+        let mut execution_ids = Vec::new(&env);
+
+        for i in 0..operations.len() {
+            let op = operations.get(i).expect("Operation missing");
+
+            // Validate operation
+            Self::validate_agent_id(op.agent_id);
+            Self::validate_string_length(&op.action, "Action name");
+            Self::validate_data_size(&op.parameters, "Parameters");
+            Self::validate_data_size(&op.execution_hash, "Execution hash");
+
+            // Replay protection
+            let stored_nonce = Self::get_action_nonce(&env, op.agent_id);
+            if op.nonce <= stored_nonce {
+                panic!(
+                    "Invalid nonce: replay protection triggered for operation {}",
+                    i
+                );
+            }
+
+            let execution_id = Self::next_execution_id(&env);
+            let timestamp = env.ledger().timestamp();
+
+            // Update nonce and record action
+            Self::set_action_nonce(&env, op.agent_id, op.nonce);
+            Self::record_action_in_history(
+                &env,
+                op.agent_id,
+                execution_id,
+                &op.action,
+                &executor,
+                op.nonce,
+                &op.execution_hash,
+            );
+            Self::store_execution_receipt(
+                &env,
+                execution_id,
+                op.agent_id,
+                &op.action,
+                &executor,
+                timestamp,
+                &op.execution_hash,
+            );
+
+            // Update behavior profile
+            let exec_cost_estimate: i128 = op.parameters.len() as i128;
+            Self::update_behavior_profile(&env, op.agent_id, op.action.clone(), exec_cost_estimate);
+
+            // Emit event
+            env.events().publish(
+                (symbol_short!("batchexec"),),
+                (
+                    execution_id,
+                    op.agent_id,
+                    op.action.clone(),
+                    executor.clone(),
+                ),
+            );
+
+            execution_ids.push_back(execution_id);
+        }
+
+        execution_ids
+    }
+
+    /// Execute multiple operations with best-effort semantics (Issue #216)
+    /// Individual failures are recorded but don't stop other operations
+    ///
+    /// # Arguments
+    /// * `executor` - Address of the executor (must be authenticated)
+    /// * `operations` - Vector of batch operations to execute
+    ///
+    /// # Returns
+    /// Vector of batch results showing success/failure for each operation
+    pub fn execute_batch_best_effort(
+        env: Env,
+        executor: Address,
+        operations: Vec<BatchOperation>,
+    ) -> Vec<BatchResult> {
+        // CRITICAL: Authenticate user at start of batch function (Issue #216)
+        executor.require_auth();
+
+        if operations.len() == 0 {
+            panic!("Batch must contain at least one operation");
+        }
+
+        if operations.len() > 10 {
+            panic!("Batch size exceeds maximum (10 operations)");
+        }
+
+        // Verify all operations belong to authenticated user
+        for i in 0..operations.len() {
+            let op = operations.get(i).expect("Operation missing");
+
+            // Permission Check: re-validate owner/operator from storage (Issue #152)
+            rbac::require_owner_or_operator(
+                &env,
+                &executor,
+                op.agent_id,
+                |e, id| {
+                    let owner = Self::get_agent_owner(e, id);
+                    Some(owner)
+                },
+                |e, id| {
+                    let op_key = symbol_short!("op");
+                    let agent_op_key = (op_key, id);
+                    e.storage()
+                        .instance()
+                        .get::<_, OperatorData>(&agent_op_key)
+                        .map(|d| (d.operator, d.expires_at))
+                },
+            )
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Unauthorized: executor is not owner or operator for agent {}",
+                    op.agent_id
+                )
+            });
+        }
+
+        // Execute operations with best-effort semantics
+        let mut results = Vec::new(&env);
+
+        for i in 0..operations.len() {
+            let op = operations.get(i).expect("Operation missing");
+
+            // Try to execute each operation, catching errors
+            let result = Self::execute_single_operation(
+                &env,
+                &executor,
+                op.agent_id,
+                op.action.clone(),
+                op.parameters.clone(),
+                op.nonce,
+                op.execution_hash.clone(),
+            );
+
+            results.push_back(result);
+        }
+
+        results
+    }
+
+    /// Helper function to execute a single operation (for best-effort batch)
+    fn execute_single_operation(
+        env: &Env,
+        executor: &Address,
+        agent_id: u64,
+        action: String,
+        parameters: Bytes,
+        nonce: u64,
+        execution_hash: Bytes,
+    ) -> BatchResult {
+        // Check rate limit
+        if let Err(_) = (|| -> Result<(), &'static str> {
+            Self::check_rate_limit(env, agent_id);
+            Ok(())
+        })() {
+            return BatchResult {
+                execution_id: 0,
+                success: false,
+                error_message: Some(String::from_str(env, "Rate limit exceeded")),
+            };
+        }
+
+        // Check nonce
+        let stored_nonce = Self::get_action_nonce(env, agent_id);
+        if nonce <= stored_nonce {
+            return BatchResult {
+                execution_id: 0,
+                success: false,
+                error_message: Some(String::from_str(env, "Invalid nonce")),
+            };
+        }
+
+        // Execute the operation
+        let execution_id = Self::next_execution_id(env);
+        let timestamp = env.ledger().timestamp();
+
+        Self::set_action_nonce(env, agent_id, nonce);
+        Self::record_action_in_history(
+            env,
+            agent_id,
+            execution_id,
+            &action,
+            executor,
+            nonce,
+            &execution_hash,
+        );
+        Self::store_execution_receipt(
+            env,
+            execution_id,
+            agent_id,
+            &action,
+            executor,
+            timestamp,
+            &execution_hash,
+        );
+
+        // Update behavior profile
+        let exec_cost_estimate: i128 = parameters.len() as i128;
+        Self::update_behavior_profile(env, agent_id, action.clone(), exec_cost_estimate);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("batch_exec"),),
+            (execution_id, agent_id, action.clone(), executor.clone()),
+        );
+
+        BatchResult {
+            execution_id,
+            success: true,
+            error_message: None,
+=======
             .get(&ADMIN_KEY)
             .expect("Hub not initialized");
         if caller != &admin {
             panic!("Unauthorized: caller is not admin");
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
         }
     }
 }

@@ -1,8 +1,49 @@
 #![no_std]
+<<<<<<< HEAD
+pub mod atomic;
+pub mod types;
 
+#[cfg(test)]
+mod prop_tests;
+mod storage;
+#[cfg(test)]
+mod test_bid_history;
+#[cfg(test)]
+mod test_dynamic_fee_enhancement;
+
+use payment_types::PaymentRecord;
+use payments::{
+    calculate_and_distribute_royalties, calculate_splits, execute_payment_routing,
+    validate_royalty_config, PaymentRoutingContext,
+};
+=======
+
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
 use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, String, Symbol, Val, Vec,
 };
+<<<<<<< HEAD
+use crate::types::{OracleData, PricingRule, MarketplaceCircuitBreaker};
+use stellai_lib::{
+    audit::{create_audit_log, OperationType},
+    errors::{error_description, ContractError},
+    rbac,
+    storage_keys::LISTING_COUNTER_KEY,
+    types::{
+        Approval, ApprovalConfig, ApprovalHistory, ApprovalStatus, Auction, AuctionStatus,
+        AuctionType, BidRecord, LeaseData, LeaseExtensionRequest, LeaseHistoryEntry, LeaseState,
+        Listing, ListingType, RoyaltyInfo, RoyaltyRecipient, RoyaltyConfig, RoyaltyPaymentRecord, TransactionStep, AssetClass,
+    },
+    validation,
+};
+use storage::{Escrow, EscrowConfig, EscrowStatus, *};
+
+#[contract]
+pub struct MarketplaceContract;
+
+const DATA_EXPIRATION_WINDOW_SECONDS: u64 = 3600;
+const BPS_DENOMINATOR: u128 = 10_000;
+=======
 
 use stellai_lib::{WorkflowStep, WorkflowStepStatus};
 
@@ -83,6 +124,7 @@ pub struct PlatformFeeConfig {
 
 #[contract]
 pub struct Marketplace;
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
 
 #[contractimpl]
 impl Marketplace {
@@ -95,6 +137,21 @@ impl Marketplace {
         if env.storage().instance().has(&key) {
             panic!("Already initialized");
         }
+<<<<<<< HEAD
+
+        admin.require_auth();
+        set_admin(&env, &admin);
+        set_payment_token(&env, payment_token);
+        set_platform_fee(&env, platform_fee_bps);
+
+        // Initialize atomic transaction support
+        crate::atomic::MarketplaceAtomicSupport::initialize(&env);
+
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin, payment_token, platform_fee_bps),
+        );
+=======
         admin.require_auth();
         env.storage().instance().set(&key, &admin);
         env.storage()
@@ -119,15 +176,22 @@ impl Marketplace {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PLATFORM_FEE_KEY), &default_fee);
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
     }
 
     pub fn set_agent_nft_contract(env: Env, admin: Address, agent_nft: Address) {
         admin.require_auth();
+<<<<<<< HEAD
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "oracle"), &oracle);
+=======
         Self::assert_admin(&env, &admin);
         env.storage()
             .instance()
             .set(&Symbol::new(&env, AGENT_NFT_KEY), &agent_nft);
         env.events().publish((symbol_short!("nft_set"),), agent_nft);
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
     }
 
     pub fn set_execution_hub(env: Env, admin: Address, hub: Address) {
@@ -143,6 +207,65 @@ impl Marketplace {
     // Listings
     // =========================================================================
 
+<<<<<<< HEAD
+    /// Atomic transaction support functions
+    pub fn get_next_atomic_transaction_id(env: Env) -> u64 {
+        crate::atomic::MarketplaceAtomicSupport::get_next_transaction_id(&env)
+    }
+
+    pub fn execute_atomic_transaction(
+        env: Env,
+        initiator: Address,
+        steps: Vec<TransactionStep>,
+    ) -> bool {
+        initiator.require_auth();
+        let transaction_id = Self::get_next_atomic_transaction_id(env.clone());
+        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(
+            &env,
+            transaction_id,
+            &steps,
+        )
+    }
+
+    pub fn try_execute_atomic_transaction(
+        env: Env,
+        initiator: Address,
+        steps: Vec<TransactionStep>,
+    ) -> bool {
+        initiator.require_auth();
+        let transaction_id = Self::get_next_atomic_transaction_id(env.clone());
+        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(
+            &env,
+            transaction_id,
+            &steps,
+        )
+    }
+
+    pub fn get_atomic_transaction(
+        env: Env,
+        transaction_id: u64,
+    ) -> Option<crate::atomic::AtomicTransactionState> {
+        let tx_key = (Symbol::new(&env, "atomic_tx"), transaction_id);
+        env.storage().instance().get(&tx_key)
+    }
+
+    pub fn get_atomic_step_state(
+        env: Env,
+        transaction_id: u64,
+        step_id: u32,
+    ) -> Option<crate::atomic::AtomicStepState> {
+        let step_key = (Symbol::new(&env, "atomic_step"), transaction_id, step_id);
+        env.storage().instance().get(&step_key)
+    }
+
+    /// Internal: verify caller is the stored admin — always re-reads from storage (Issue #152)
+    fn verify_admin(env: &Env, caller: &Address) {
+        rbac::require_admin(env, caller).unwrap_or_else(|_| panic!("Unauthorized"));
+    }
+
+    /// Create a new listing
+=======
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
     pub fn create_listing(
         env: Env,
         agent_id: u64,
@@ -227,6 +350,407 @@ impl Marketplace {
         listing_id
     }
 
+<<<<<<< HEAD
+    /// Purchase an agent - funds are held in escrow until buyer confirms receipt
+    pub fn buy_agent(env: Env, listing_id: u64, buyer: Address) {
+        buyer.require_auth();
+
+        // ─── SNAPSHOT PHASE ───
+        let listing_key = (Symbol::new(&env, "listing"), listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .instance()
+            .get(&listing_key)
+            .expect("Listing not found");
+
+        let approval_config = get_approval_config(&env);
+        let escrow_config = get_escrow_config(&env);
+        let _platform_fee_bps = Self::get_platform_fee(env.clone());
+        let _royalty_info = Self::get_royalty(env.clone(), listing.agent_id);
+
+        // ─── VALIDATION PHASE ───
+        if validation::validate_nonzero_id(listing_id).is_err() {
+            panic!("Invalid listing ID");
+        }
+
+        if !listing.active {
+            panic!("Listing is not active");
+        }
+
+        if listing.price >= approval_config.threshold {
+            panic!("High-value sale requires multi-signature approval. Use propose_sale() first.");
+        }
+
+        // ─── MUTATION PHASE ───
+
+        // Process fee transition if active
+        Self::process_fee_transition(env.clone());
+
+        // Transfer funds from buyer to contract (escrow)
+        let payment_token = get_payment_token(&env);
+        let token_client = token::Client::new(&env, &payment_token);
+        token_client.transfer(&buyer, &env.current_contract_address(), &listing.price);
+
+        // Create escrow entry
+        let escrow_id = increment_escrow_counter(&env);
+        let now = env.ledger().timestamp();
+        let escrow = Escrow {
+            escrow_id,
+            listing_id,
+            agent_id: listing.agent_id,
+            buyer: buyer.clone(),
+            seller: listing.seller.clone(),
+            amount: listing.price,
+            created_at: now,
+            auto_release_at: now + escrow_config.auto_release_period_seconds,
+            status: EscrowStatus::Held,
+            dispute_resolved_at: None,
+            resolved_by: None,
+        };
+        set_escrow(&env, &escrow);
+
+        // Mark listing as inactive
+        listing.active = false;
+        env.storage().instance().set(&listing_key, &listing);
+
+        env.events().publish(
+            (Symbol::new(&env, "agent_purchased_escrowed"),),
+            (
+                listing_id,
+                escrow_id,
+                listing.agent_id,
+                buyer.clone(),
+                listing.seller.clone(),
+                listing.price,
+                escrow.auto_release_at,
+            ),
+        );
+
+        // Auto-mint credit score NFT for successful purchase
+        if let Err(e) = Self::auto_mint_credit_on_purchase(env.clone(), listing_id, buyer.clone()) {
+            // Log error but don't fail the transaction
+            env.events().publish(
+                (Symbol::new(&env, "CreditScoreNFTMintFailed"),),
+                (
+                    listing_id,
+                    buyer,
+                    String::from_str(&env, error_description(e)),
+                ),
+            );
+        }
+    }
+
+    /// Helper to route payment for a completed sale with automated royalty distribution.
+    fn route_sale_payment(
+        env: &Env,
+        agent_id: u64,
+        sale_price: i128,
+        buyer: &Address,
+        seller: &Address,
+        royalty_info: Option<RoyaltyInfo>,
+        platform_fee_bps: u32,
+        asset_class: AssetClass,
+    ) {
+        // First, attempt automated royalty distribution
+        let transaction_id = env.ledger().sequence() as u64;
+        let royalty_result = calculate_and_distribute_royalties(
+            env,
+            agent_id,
+            sale_price,
+            asset_class,
+            transaction_id,
+        );
+
+        // If automated royalty distribution succeeded, use it
+        // Otherwise, fall back to legacy payment routing
+        let (royalty_recipients, royalty_rate) = if royalty_result.is_ok() {
+            // Royalties already distributed, skip in payment routing
+            (Vec::new(env), 0u32)
+        } else {
+            // Fall back to legacy routing
+            let mut recipients = Vec::new(env);
+            let mut rate = 0u32;
+
+            if let Some(info) = royalty_info {
+                rate = info.fee;
+                recipients.push_back((info.recipient, rate, String::from_str(env, "creator")));
+            }
+            (recipients, rate)
+        };
+
+        let context = PaymentRoutingContext {
+            agent_id,
+            transaction_id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            platform_address: env.current_contract_address(),
+            royalty_recipients,
+            asset_class,
+        };
+
+        let split = calculate_splits(env, sale_price, royalty_rate, platform_fee_bps, &context);
+        execute_payment_routing(env, split);
+        set_previous_owner(env, agent_id, seller);
+    }
+
+    /// Cancel a listing
+    pub fn cancel_listing(env: Env, listing_id: u64, seller: Address) {
+        seller.require_auth();
+
+        if validation::validate_nonzero_id(listing_id).is_err() {
+            panic!("Invalid listing ID");
+        }
+
+        let listing_key = (Symbol::new(&env, "listing"), listing_id);
+        let mut listing: Listing = env
+            .storage()
+            .instance()
+            .get(&listing_key)
+            .expect("Listing not found");
+
+        if listing.seller != seller {
+            panic!("Unauthorized: only seller can cancel listing");
+        }
+
+        listing.active = false;
+        env.storage().instance().set(&listing_key, &listing);
+
+        env.events().publish(
+            (Symbol::new(&env, "listing_cancelled"),),
+            (listing_id, listing.agent_id, seller),
+        );
+    }
+
+    /// Get a specific listing
+    pub fn get_listing(env: Env, listing_id: u64) -> Option<Listing> {
+        if validation::validate_nonzero_id(listing_id).is_err() {
+            panic!("Invalid listing ID");
+        }
+
+        let listing_key = (Symbol::new(&env, "listing"), listing_id);
+        env.storage().instance().get(&listing_key)
+    }
+
+    /// Retrieve payment history for an agent (immutable audit trail).
+    pub fn get_payment_history(env: Env, agent_id: u64) -> Vec<PaymentRecord> {
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        let mut history = Vec::new(&env);
+        let count = storage::get_payment_history_count(&env, agent_id);
+
+        for i in 0..count {
+            if let Some(payment_id) = storage::get_payment_history_entry(&env, agent_id, i) {
+                if let Some(record) = storage::get_payment_record(&env, payment_id) {
+                    history.push_back(record);
+                }
+            }
+        }
+
+        history
+    }
+
+    /// Set royalty info for an agent
+    pub fn set_royalty(env: Env, agent_id: u64, creator: Address, recipient: Address, fee: u32) {
+        creator.require_auth();
+
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+        if fee > 2500 {
+            panic!("Royalty fee exceeds maximum (25%)");
+        }
+
+        let royalty_info = RoyaltyInfo { recipient, fee };
+
+        let royalty_key = (Symbol::new(&env, "royalty"), agent_id);
+        env.storage().instance().set(&royalty_key, &royalty_info);
+
+        env.events()
+            .publish((Symbol::new(&env, "royalty_set"),), (agent_id, fee));
+    }
+
+    /// Get royalty info for an agent
+    pub fn get_royalty(env: Env, agent_id: u64) -> Option<RoyaltyInfo> {
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        let royalty_key = (Symbol::new(&env, "royalty"), agent_id);
+        env.storage().instance().get(&royalty_key)
+    }
+
+    // ---------------- ROYALTY AUTOMATION ----------------
+
+    /// Set royalty configuration for an agent with multiple recipients
+    pub fn set_royalty_config(
+        env: Env,
+        admin: Address,
+        agent_id: u64,
+        recipients: Vec<RoyaltyRecipient>,
+        total_bps: u32,
+        min_threshold: i128,
+        max_cap: Option<i128>,
+        asset_class: AssetClass,
+    ) {
+        admin.require_auth();
+        Self::verify_admin(&env, &admin);
+
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        let config = RoyaltyConfig {
+            recipients: recipients.clone(),
+            total_bps,
+            min_threshold,
+            max_cap,
+        };
+
+        // Validate configuration
+        validate_royalty_config(&config, asset_class, &env).expect("Invalid royalty configuration");
+
+        storage::set_royalty_config(&env, agent_id, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "royalty_config_set"),),
+            (agent_id, total_bps, recipients.len() as u64),
+        );
+    }
+
+    /// Get royalty configuration for an agent
+    pub fn get_royalty_config(env: Env, agent_id: u64) -> Option<RoyaltyConfig> {
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        storage::get_royalty_config(&env, agent_id)
+    }
+
+    /// Set royalty settings for an asset class (admin only)
+    pub fn set_asset_class_royalty_settings(
+        env: Env,
+        admin: Address,
+        asset_class: AssetClass,
+        default_royalty_bps: u32,
+        min_royalty_bps: u32,
+        max_royalty_bps: u32,
+        min_threshold: i128,
+    ) {
+        admin.require_auth();
+        Self::verify_admin(&env, &admin);
+
+        let settings = AssetClassRoyaltySettings {
+            asset_class,
+            default_royalty_bps,
+            min_royalty_bps,
+            max_royalty_bps,
+            min_threshold,
+        };
+
+        storage::set_asset_class_royalty_settings(&env, asset_class, &settings);
+
+        env.events().publish(
+            (Symbol::new(&env, "asset_class_royalty_settings_set"),),
+            (asset_class as u32, default_royalty_bps),
+        );
+    }
+
+    /// Get royalty settings for an asset class
+    pub fn get_asset_class_royalty_settings(
+        env: Env,
+        asset_class: AssetClass,
+    ) -> AssetClassRoyaltySettings {
+        storage::get_asset_class_royalty_settings(&env, asset_class)
+            .unwrap_or_else(|| storage::get_default_asset_class_settings(&env, asset_class))
+    }
+
+    /// Get royalty payment history for an agent
+    pub fn get_royalty_payment_history(env: Env, agent_id: u64) -> Vec<RoyaltyPaymentRecord> {
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        let mut history = Vec::new(&env);
+        let count = storage::get_royalty_payment_history_count(&env, agent_id);
+
+        for i in 0..count {
+            if let Some(payment_id) = storage::get_royalty_payment_history_entry(&env, agent_id, i)
+            {
+                if let Some(record) = storage::get_royalty_payment_record(&env, payment_id) {
+                    history.push_back(record);
+                }
+            }
+        }
+
+        history
+    }
+
+    /// Get total royalties paid for an agent
+    pub fn get_total_royalties_paid(env: Env, agent_id: u64) -> i128 {
+        if validation::validate_nonzero_id(agent_id).is_err() {
+            panic!("Invalid agent ID");
+        }
+
+        let history = Self::get_royalty_payment_history(env, agent_id);
+        let mut total = 0i128;
+
+        for i in 0..history.len() {
+            let record = history.get(i).unwrap();
+            total = total + record.total_royalty_paid;
+        }
+
+        total
+    }
+
+    // ---------------- MULTI-SIGNATURE APPROVAL ----------------
+
+    /// Configure approval settings (admin only)
+    pub fn set_approval_config(
+        env: Env,
+        admin: Address,
+        threshold: i128,
+        approvers_required: u32,
+        total_approvers: u32,
+        ttl_seconds: u64,
+    ) {
+        Self::verify_admin(&env, &admin);
+
+        assert!(threshold > 0, "Threshold must be positive");
+        assert!(
+            approvers_required > 0,
+            "Approvers required must be positive"
+        );
+        assert!(
+            total_approvers >= approvers_required,
+            "Total approvers must be >= required"
+        );
+        assert!(ttl_seconds > 0, "TTL must be positive");
+
+        let config = ApprovalConfig {
+            threshold,
+            approvers_required,
+            total_approvers,
+            ttl_seconds,
+        };
+
+        set_approval_config(&env, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "ApprovalConfigUpdated"),),
+            (threshold, approvers_required, total_approvers, ttl_seconds),
+        );
+    }
+
+    /// Get current approval configuration
+    pub fn get_approval_config(env: Env) -> ApprovalConfig {
+        get_approval_config(&env)
+    }
+
+    /// Propose a sale for multi-signature approval (fixed-price listing)
+    pub fn propose_sale(env: Env, listing_id: u64, buyer: Address, approvers: Vec<Address>) -> u64 {
+=======
     // =========================================================================
     // Execution-hub-orchestrated sale
     // =========================================================================
@@ -239,6 +763,7 @@ impl Marketplace {
     ///
     /// Returns `(listing_id, workflow_id)`.
     pub fn buy_agent(env: Env, listing_id: u64, buyer: Address, amount: i128) -> (u64, u64) {
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
         buyer.require_auth();
 
         if listing_id == 0 {
@@ -763,6 +1288,133 @@ impl Marketplace {
             panic!("Only involved parties can reject offers");
         }
 
+<<<<<<< HEAD
+        set_auction(&env, &auction);
+
+        // Update approval status
+        let mut updated_approval = approval;
+        updated_approval.status = ApprovalStatus::Executed;
+        set_approval(&env, &updated_approval);
+
+        // Add execution to history
+        let history = ApprovalHistory {
+            approval_id,
+            action: String::from_str(&env, "executed"),
+            actor: env.current_contract_address(),
+            timestamp: now,
+            reason: None,
+        };
+        add_approval_history(&env, approval_id, &history);
+
+        env.events().publish(
+            (Symbol::new(&env, "SaleExecuted"),),
+            (approval_id, auction_id, updated_approval.buyer),
+        );
+    }
+
+    /// Get approval details
+    pub fn get_approval(env: Env, approval_id: u64) -> Option<Approval> {
+        if approval_id == 0 {
+            panic!("Invalid approval ID");
+        }
+        get_approval(&env, approval_id)
+    }
+
+    pub fn verify_and_get_oracle_value(
+        env: Env,
+        oracle_data: OracleData,
+        _signature: BytesN<64>,
+    ) -> u128 {
+        let breaker: MarketplaceCircuitBreaker = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "breaker"))
+            .unwrap_or(MarketplaceCircuitBreaker::Active);
+
+        if let MarketplaceCircuitBreaker::Terminated = breaker {
+            panic!("Marketplace core operations are locked via circuit breaker");
+        }
+
+        let authorized_oracle: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "oracle"))
+            .unwrap_or_else(|| panic!("Oracle reference not configured"));
+
+        let mut check_payload = Bytes::new(&env);
+        check_payload.append(&oracle_data.metric_id.to_xdr(&env));
+        check_payload.append(&oracle_data.value.to_xdr(&env));
+        check_payload.append(&oracle_data.timestamp.to_xdr(&env));
+
+        // Fix: Cast explicitly into a generic Soroban Val mapping
+        authorized_oracle.require_auth_for_args(vec![&env, check_payload.into()]);
+
+        let current_ledger_time = env.ledger().timestamp();
+        if current_ledger_time > oracle_data.timestamp + DATA_EXPIRATION_WINDOW_SECONDS {
+            panic!("Oracle data attestation has expired");
+        }
+
+        oracle_data.value
+    }
+
+    pub fn calculate_dynamic_price(
+        _env: Env,
+        rule: PricingRule,
+        verified_metric_value: u128,
+    ) -> u128 {
+        if verified_metric_value == 0 {
+            return rule.base_price;
+        }
+
+        let adjustment = verified_metric_value
+            .checked_mul(rule.scale_factor_bps as u128)
+            .unwrap_or(0)
+            / BPS_DENOMINATOR;
+
+        if rule.inverse {
+            rule.base_price.checked_sub(adjustment).unwrap_or(0)
+        } else {
+            rule.base_price.checked_add(adjustment).unwrap_or(rule.base_price)
+        }
+    }
+
+    /// Place a bid on an active auction
+    pub fn place_bid(
+        env: Env,
+        auction_id: u64,
+        bidder: Address,
+        amount: u128,
+    ) {
+        bidder.require_auth();
+        
+        let mut auction = get_auction(&env, auction_id).expect("Auction not found");
+        assert!(auction.status == AuctionStatus::Active, "Auction is not active");
+        
+        // Calculate minimum required bid (10% increment over current highest bid)
+        let computed_min_step = if auction.highest_bid > 0 {
+            (auction.highest_bid * 1000) / 10000 // 10% minimum increment
+        } else {
+            0
+        };
+        
+        let min_bid = if auction.highest_bid > 0 {
+            auction.highest_bid + computed_min_step
+        } else {
+            // No bids yet: require at least the start price
+            auction.start_price
+        };
+
+        assert!(amount >= min_bid, "Bid too low");
+
+        let token_client = token::Client::new(&env, &get_payment_token(&env));
+
+        // Refund previous highest bidder
+        if let Some(prev_bidder) = auction.highest_bidder {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &prev_bidder,
+                &auction.highest_bid,
+=======
         if offer.active {
             offer.active = false;
             env.storage()
@@ -771,6 +1423,7 @@ impl Marketplace {
             env.events().publish(
                 (symbol_short!("ofr_rjct"),),
                 (offer_id, caller, env.ledger().timestamp()),
+>>>>>>> 23f84062ccbc3c9d2474daf07a559c62da09ed18
             );
         }
     }
