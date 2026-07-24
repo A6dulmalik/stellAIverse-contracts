@@ -1,6 +1,5 @@
 #![no_std]
 
-use alloc::string::ToString;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map,
     String, Symbol, Vec, U256,
@@ -194,7 +193,7 @@ impl RiskEvaluation {
         // Check authorization and rate limits
         Self::check_rate_limit(&env, &caller)?;
 
-        if data_keys.len() > MAX_BATCH_SIZE as usize {
+        if data_keys.len() > MAX_BATCH_SIZE {
             return Err(RiskEvalError::BatchSizeExceeded);
         }
 
@@ -205,7 +204,7 @@ impl RiskEvaluation {
 
         // Check cache first
         for key in data_keys.iter() {
-            if let Some(cached_entry) = Self::get_cached_data(&env, &key) {
+            if let Some(cached_entry) = Self::get_cached_data(&env, key) {
                 cached_results.set(key.clone(), cached_entry.value);
             } else {
                 uncached_keys.push_back(key.clone());
@@ -223,12 +222,11 @@ impl RiskEvaluation {
                     key: key.clone(),
                     value: 1000i128, // Default value for simulation
                     timestamp: env.ledger().timestamp(),
-                    signature: None,
-                    source: None,
+                    signature: Bytes::new(&env),
                 };
 
                 // Cache the result
-                Self::set_cached_data(&env, &key, oracle_data.value);
+                Self::set_cached_data(&env, key, oracle_data.value);
                 cached_results.set(key.clone(), oracle_data.value);
             }
         }
@@ -278,8 +276,8 @@ impl RiskEvaluation {
         let mut valid_factors = Vec::new(&env);
 
         for (i, value) in data_values.iter().enumerate() {
-            if i < risk_factors.len() as usize {
-                let factor = risk_factors.get(i as u32).unwrap();
+            if i < risk_factors.len() {
+                let factor = risk_factors.get(i).unwrap();
 
                 // Different risk factors contribute differently to the score
                 let contribution = match factor.to_string().as_str() {

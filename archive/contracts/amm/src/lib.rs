@@ -91,35 +91,35 @@ impl Amm {
         // Calculate LP tokens to mint with rounding protection.
         let lp_minted = if pool.lp_total_supply == 0 {
             // First deposit: LP tokens = sqrt(amount_a * amount_b).
-            let lp_tokens = isqrt((amount_a * amount_b) as u128);
+            let lp_tokens = isqrt(amount_a * amount_b);
 
             // Enforce minimum LP token threshold
-            if (lp_tokens as i128) < min_threshold {
+            if lp_tokens < min_threshold {
                 panic!(
                     "Liquidity too small - minimum LP tokens required: {}",
                     min_threshold
                 );
             }
 
-            lp_tokens as i128
+            lp_tokens
         } else {
             // Subsequent deposits: use ceiling division to favor the pool
             // This prevents rounding attacks where users deposit tiny amounts
-            let lp_a = Self::ceil_div((amount_a * pool.lp_total_supply) as u128, pool.reserve_a as u128);
-            let lp_b = Self::ceil_div((amount_b * pool.lp_total_supply) as u128, pool.reserve_b as u128);
+            let lp_a = Self::ceil_div(amount_a * pool.lp_total_supply, pool.reserve_a);
+            let lp_b = Self::ceil_div(amount_b * pool.lp_total_supply, pool.reserve_b);
 
             // Take the minimum to avoid diluting existing LPs
             let lp_tokens = if lp_a < lp_b { lp_a } else { lp_b };
 
             // Enforce minimum LP token threshold
-            if (lp_tokens as i128) < min_threshold {
+            if lp_tokens < min_threshold {
                 panic!(
                     "Liquidity too small - minimum LP tokens required: {}",
                     min_threshold
                 );
             }
 
-            lp_tokens as i128
+            lp_tokens
         };
 
         assert!(lp_minted > 0, "Insufficient liquidity minted");
@@ -201,16 +201,14 @@ impl Amm {
 
         // Calculate proportional share using ceiling division to favor the pool
         // This prevents rounding attacks where users withdraw tiny amounts
-        let amount_a = Self::floor_div((lp_amount * pool.reserve_a) as u128, pool.lp_total_supply as u128);
-        let amount_b = Self::floor_div((lp_amount * pool.reserve_b) as u128, pool.lp_total_supply as u128);
-        let amount_a_i128 = amount_a as i128;
-        let amount_b_i128 = amount_b as i128;
+        let amount_a = Self::floor_div(lp_amount * pool.reserve_a, pool.lp_total_supply);
+        let amount_b = Self::floor_div(lp_amount * pool.reserve_b, pool.lp_total_supply);
 
-        assert!(amount_a_i128 > 0 && amount_b_i128 > 0, "Withdrawal amounts too small");
+        assert!(amount_a > 0 && amount_b > 0, "Withdrawal amounts too small");
 
         // Update pool state.
-        pool.reserve_a -= amount_a_i128;
-        pool.reserve_b -= amount_b_i128;
+        pool.reserve_a -= amount_a;
+        pool.reserve_b -= amount_b;
         pool.lp_total_supply -= lp_amount;
         set_pool(&env, &pool);
 
@@ -222,18 +220,18 @@ impl Amm {
         let token_a_client = token::Client::new(&env, &pool.token_a);
         let token_b_client = token::Client::new(&env, &pool.token_b);
 
-        token_a_client.transfer(&contract_addr, &provider, &amount_a_i128);
-        token_b_client.transfer(&contract_addr, &provider, &amount_b_i128);
+        token_a_client.transfer(&contract_addr, &provider, &amount_a);
+        token_b_client.transfer(&contract_addr, &provider, &amount_b);
 
         // CRITICAL: Invalidate query cache after state change (Issue #215)
         storage::invalidate_query_cache(&env, pool_id);
 
         env.events().publish(
             (Symbol::new(&env, "LiquidityRemoved"),),
-            (pool_id, &provider, amount_a_i128, amount_b_i128, lp_amount),
+            (pool_id, &provider, amount_a, amount_b, lp_amount),
         );
 
-        (amount_a_i128, amount_b_i128)
+        (amount_a, amount_b)
     }
 
     /// Execute a swap on a pool with slippage protection.
@@ -464,7 +462,7 @@ impl Amm {
             env.events().publish(
                 (Symbol::new(&env, "HopCompleted"),),
                 (
-                    i as u32,
+                    i,
                     hop.pool_id,
                     hop.token_in.clone(),
                     hop.token_out.clone(),
@@ -609,14 +607,14 @@ impl Amm {
         token_out: &Address,
     ) -> Option<Address> {
         // Check all possible intermediate tokens
-        let pool_1_tokens = soroban_sdk::vec![env, pool_1.token_a.clone(), pool_1.token_b.clone()];
-        let pool_2_tokens = soroban_sdk::vec![env, pool_2.token_a.clone(), pool_2.token_b.clone()];
+        let pool_1_tokens = soroban_sdk::vec![&env, pool_1.token_a.clone(), pool_1.token_b.clone()];
+        let pool_2_tokens = soroban_sdk::vec![&env, pool_2.token_a.clone(), pool_2.token_b.clone()];
 
-        for token1 in pool_1_tokens.iter() {
-            if token1 == *token_in || token1 == *token_out {
+        for &token1 in &pool_1_tokens {
+            if token1 == token_in || token1 == token_out {
                 continue;
             }
-            for token2 in pool_2_tokens.iter() {
+            for &token2 in &pool_2_tokens {
                 if token1 == token2 {
                     return Some(token1.clone());
                 }
@@ -830,7 +828,7 @@ impl Amm {
             if state.is_active {
                 let now = env.ledger().timestamp();
                 if now < state.cooldown_until {
-                    panic!("Circuit breaker is active");
+                    panic!("Circuit breaker is active: {}", state.reason);
                 } else {
                     // Auto-expire circuit breaker
                     let mut expired_state = state;
