@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol, Vec};
 use stellai_lib::{admin, errors::ContractError, ADMIN_KEY};
 
 #[contracttype]
@@ -265,7 +265,7 @@ impl BugBounty {
             }
 
             let key = (Symbol::new(&env, "bug"), bug_id);
-            if let Ok(submission) = env.storage().instance().get::<_, BugBountySubmission>(&key) {
+            if let Some(submission) = env.storage().instance().get::<_, BugBountySubmission>(&key) {
                 if submission.status == status {
                     results.push_back(submission);
                 }
@@ -294,7 +294,7 @@ impl BugBounty {
             }
 
             let key = (Symbol::new(&env, "bug"), bug_id);
-            if let Ok(submission) = env.storage().instance().get::<_, BugBountySubmission>(&key) {
+            if let Some(submission) = env.storage().instance().get::<_, BugBountySubmission>(&key) {
                 if submission.submitter == submitter {
                     results.push_back(submission);
                 }

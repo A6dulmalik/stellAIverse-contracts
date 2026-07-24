@@ -7,7 +7,7 @@ use soroban_sdk::{
 #[cfg(test)]
 mod prop_tests;
 use stellai_lib::{
-    admin, errors::ContractError, rbac, storage_keys::EXEC_CTR_KEY, validation, AnomalyScore,
+    admin, rbac, storage_keys::EXEC_CTR_KEY, validation, AnomalyScore,
     AnomalySeverity, BehaviorProfile, ProposalStatus, ThresholdKeyShare, ThresholdProposal,
     ADMIN_KEY, DEFAULT_RATE_LIMIT_OPERATIONS, DEFAULT_RATE_LIMIT_WINDOW_SECONDS, MAX_DATA_SIZE,
     MAX_HISTORY_QUERY_LIMIT, MAX_HISTORY_SIZE, MAX_STRING_LENGTH,
@@ -919,11 +919,11 @@ impl ExecutionHub {
             .get(profile.operations_per_hour.len().saturating_sub(1))
             .unwrap_or(0u32) as i128;
         let freq_z_bp = if stddev > 0 {
-            ((if current > mean {
+            (if current > mean {
                 current - mean
             } else {
                 mean - current
-            }) * 100)
+            }) * 100
                 / (stddev + 1)
         } else {
             ((if current > mean {
@@ -1368,7 +1368,7 @@ impl ExecutionHub {
 
             // Emit event
             env.events().publish(
-                (symbol_short!("batch_exec"),),
+                (symbol_short!("batchexec"),),
                 (
                     execution_id,
                     op.agent_id,

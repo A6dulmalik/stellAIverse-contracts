@@ -940,7 +940,7 @@ pub fn get_default_asset_class_settings(
             default_royalty_bps: 500, // 5%
             min_royalty_bps: 0,
             max_royalty_bps: 2500, // 25%
-            min_threshold: 1000, // Minimum sale price to trigger royalties
+            min_threshold: 1000,   // Minimum sale price to trigger royalties
         },
         stellai_lib::AssetClass::Model => stellai_lib::AssetClassRoyaltySettings {
             asset_class: stellai_lib::AssetClass::Model,
@@ -1007,9 +1007,10 @@ pub fn get_royalty_payment_record(
 /// Add royalty payment to history
 pub fn add_royalty_payment_history(env: &Env, agent_id: u64, payment_id: u64) {
     let index = get_royalty_payment_history_count(env, agent_id);
-    env.storage()
-        .instance()
-        .set(&DataKey::RoyaltyPaymentHistory(agent_id, index), &payment_id);
+    env.storage().instance().set(
+        &DataKey::RoyaltyPaymentHistory(agent_id, index),
+        &payment_id,
+    );
 }
 
 /// Get royalty payment history count for an agent

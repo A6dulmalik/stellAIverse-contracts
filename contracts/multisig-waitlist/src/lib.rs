@@ -211,7 +211,7 @@ impl MultisigWaitlist {
             }
 
             let user_key = (Symbol::new(&env, "user"), user.clone());
-            if let Ok(mut entry) = env
+            if let Some(mut entry) = env
                 .storage()
                 .instance()
                 .get::<_, MultisigWaitlistEntry>(&user_key)
@@ -414,10 +414,10 @@ impl MultisigWaitlist {
             let position_key = (Symbol::new(&env, "position"), position);
             if let Some(user) = env.storage().instance().get::<_, Address>(&position_key) {
                 let user_key = (Symbol::new(&env, "user"), user);
-                if let Ok(entry) = env
-                    .storage()
-                    .instance()
-                    .get::<_, MultisigWaitlistEntry>(&user_key)
+                if let Some(entry) = env
+                     .storage()
+                     .instance()
+                     .get::<_, MultisigWaitlistEntry>(&user_key)
                 {
                     match entry.status {
                         WaitlistStatus::Pending => stats.pending += 1,
@@ -450,10 +450,10 @@ impl MultisigWaitlist {
             let position_key = (Symbol::new(&env, "position"), position);
             if let Some(user) = env.storage().instance().get::<_, Address>(&position_key) {
                 let user_key = (Symbol::new(&env, "user"), user);
-                if let Ok(entry) = env
-                    .storage()
-                    .instance()
-                    .get::<_, MultisigWaitlistEntry>(&user_key)
+                if let Some(entry) = env
+                     .storage()
+                     .instance()
+                     .get::<_, MultisigWaitlistEntry>(&user_key)
                 {
                     if entry.status == WaitlistStatus::Pending {
                         results.push_back(entry);
@@ -482,10 +482,10 @@ impl MultisigWaitlist {
             let position_key = (Symbol::new(&env, "position"), position);
             if let Some(user) = env.storage().instance().get::<_, Address>(&position_key) {
                 let user_key = (Symbol::new(&env, "user"), user);
-                if let Ok(entry) = env
-                    .storage()
-                    .instance()
-                    .get::<_, MultisigWaitlistEntry>(&user_key)
+                if let Some(entry) = env
+                     .storage()
+                     .instance()
+                     .get::<_, MultisigWaitlistEntry>(&user_key)
                 {
                     if entry.status == WaitlistStatus::Approved {
                         results.push_back(entry);

@@ -1,6 +1,6 @@
 #![no_std]
-pub mod types;
 pub mod atomic;
+pub mod types;
 
 #[cfg(test)]
 mod prop_tests;
@@ -13,12 +13,13 @@ mod test_dynamic_fee_enhancement;
 use payment_types::PaymentRecord;
 use payments::{
     calculate_and_distribute_royalties, calculate_splits, execute_payment_routing,
-    PaymentRoutingContext, validate_royalty_config,
+    validate_royalty_config, PaymentRoutingContext,
 };
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, IntoVal, Map, String, Symbol,
     TryIntoVal, Val, Vec,
 };
+use crate::types::{OracleData, PricingRule, MarketplaceCircuitBreaker};
 use stellai_lib::{
     audit::{create_audit_log, OperationType},
     errors::{error_description, ContractError},
@@ -27,7 +28,7 @@ use stellai_lib::{
     types::{
         Approval, ApprovalConfig, ApprovalHistory, ApprovalStatus, Auction, AuctionStatus,
         AuctionType, BidRecord, LeaseData, LeaseExtensionRequest, LeaseHistoryEntry, LeaseState,
-        Listing, ListingType, RoyaltyInfo, TransactionStep, TransactionStatus,
+        Listing, ListingType, RoyaltyInfo, RoyaltyRecipient, RoyaltyConfig, RoyaltyPaymentRecord, TransactionStep, AssetClass,
     },
     validation,
 };
@@ -36,7 +37,7 @@ use storage::{Escrow, EscrowConfig, EscrowStatus, *};
 #[contract]
 pub struct MarketplaceContract;
 
-const DATA_EXPIRATION_WINDOW_SECONDS: u64 = 3600; 
+const DATA_EXPIRATION_WINDOW_SECONDS: u64 = 3600;
 const BPS_DENOMINATOR: u128 = 10_000;
 
 #[contractimpl]
@@ -46,21 +47,26 @@ impl MarketplaceContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("Contract already initialized");
         }
-        
+
         admin.require_auth();
         set_admin(&env, &admin);
         set_payment_token(&env, payment_token);
         set_platform_fee(&env, platform_fee_bps);
-        
+
         // Initialize atomic transaction support
         crate::atomic::MarketplaceAtomicSupport::initialize(&env);
-        
-        env.events().publish((symbol_short!("init"),), (admin, payment_token, platform_fee_bps));
+
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin, payment_token, platform_fee_bps),
+        );
     }
 
     pub fn authorize_oracle(env: Env, admin: Address, oracle: Address) {
         admin.require_auth();
-        env.storage().instance().set(&Symbol::new(&env, "oracle"), &oracle);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "oracle"), &oracle);
     }
 
     pub fn set_circuit_breaker(env: Env, admin: Address, status: MarketplaceCircuitBreaker) {
@@ -82,24 +88,47 @@ impl MarketplaceContract {
         crate::atomic::MarketplaceAtomicSupport::get_next_transaction_id(&env)
     }
 
-    pub fn execute_atomic_transaction(env: Env, initiator: Address, steps: Vec<TransactionStep>) -> bool {
+    pub fn execute_atomic_transaction(
+        env: Env,
+        initiator: Address,
+        steps: Vec<TransactionStep>,
+    ) -> bool {
         initiator.require_auth();
         let transaction_id = Self::get_next_atomic_transaction_id(env.clone());
-        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(&env, transaction_id, &steps)
+        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(
+            &env,
+            transaction_id,
+            &steps,
+        )
     }
 
-    pub fn try_execute_atomic_transaction(env: Env, initiator: Address, steps: Vec<TransactionStep>) -> bool {
+    pub fn try_execute_atomic_transaction(
+        env: Env,
+        initiator: Address,
+        steps: Vec<TransactionStep>,
+    ) -> bool {
         initiator.require_auth();
         let transaction_id = Self::get_next_atomic_transaction_id(env.clone());
-        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(&env, transaction_id, &steps)
+        crate::atomic::MarketplaceAtomicSupport::execute_atomic_transaction(
+            &env,
+            transaction_id,
+            &steps,
+        )
     }
 
-    pub fn get_atomic_transaction(env: Env, transaction_id: u64) -> Option<crate::atomic::AtomicTransactionState> {
+    pub fn get_atomic_transaction(
+        env: Env,
+        transaction_id: u64,
+    ) -> Option<crate::atomic::AtomicTransactionState> {
         let tx_key = (Symbol::new(&env, "atomic_tx"), transaction_id);
         env.storage().instance().get(&tx_key)
     }
 
-    pub fn get_atomic_step_state(env: Env, transaction_id: u64, step_id: u32) -> Option<crate::atomic::AtomicStepState> {
+    pub fn get_atomic_step_state(
+        env: Env,
+        transaction_id: u64,
+        step_id: u32,
+    ) -> Option<crate::atomic::AtomicStepState> {
         let step_key = (Symbol::new(&env, "atomic_step"), transaction_id, step_id);
         env.storage().instance().get(&step_key)
     }
@@ -307,11 +336,7 @@ impl MarketplaceContract {
 
             if let Some(info) = royalty_info {
                 rate = info.fee;
-                recipients.push_back((
-                    info.recipient,
-                    rate,
-                    String::from_str(env, "creator"),
-                ));
+                recipients.push_back((info.recipient, rate, String::from_str(env, "creator")));
             }
             (recipients, rate)
         };
@@ -447,8 +472,7 @@ impl MarketplaceContract {
         };
 
         // Validate configuration
-        validate_royalty_config(&config, asset_class, &env)
-            .expect("Invalid royalty configuration");
+        validate_royalty_config(&config, asset_class, &env).expect("Invalid royalty configuration");
 
         storage::set_royalty_config(&env, agent_id, &config);
 
@@ -515,7 +539,8 @@ impl MarketplaceContract {
         let count = storage::get_royalty_payment_history_count(&env, agent_id);
 
         for i in 0..count {
-            if let Some(payment_id) = storage::get_royalty_payment_history_entry(&env, agent_id, i) {
+            if let Some(payment_id) = storage::get_royalty_payment_history_entry(&env, agent_id, i)
+            {
                 if let Some(record) = storage::get_royalty_payment_record(&env, payment_id) {
                     history.push_back(record);
                 }
@@ -1049,19 +1074,23 @@ impl MarketplaceContract {
     }
 
     pub fn verify_and_get_oracle_value(
-        env: Env, 
-        oracle_data: OracleData, 
-        _signature: BytesN<64>
+        env: Env,
+        oracle_data: OracleData,
+        _signature: BytesN<64>,
     ) -> u128 {
-        let breaker: MarketplaceCircuitBreaker = env.storage().instance()
+        let breaker: MarketplaceCircuitBreaker = env
+            .storage()
+            .instance()
             .get(&Symbol::new(&env, "breaker"))
             .unwrap_or(MarketplaceCircuitBreaker::Active);
-            
+
         if let MarketplaceCircuitBreaker::Terminated = breaker {
             panic!("Marketplace core operations are locked via circuit breaker");
         }
 
-        let authorized_oracle: Address = env.storage().instance()
+        let authorized_oracle: Address = env
+            .storage()
+            .instance()
             .get(&Symbol::new(&env, "oracle"))
             .unwrap_or_else(|| panic!("Oracle reference not configured"));
 
@@ -1082,9 +1111,9 @@ impl MarketplaceContract {
     }
 
     pub fn calculate_dynamic_price(
-        _env: Env, 
-        rule: PricingRule, 
-        verified_metric_value: u128
+        _env: Env,
+        rule: PricingRule,
+        verified_metric_value: u128,
     ) -> u128 {
         if verified_metric_value == 0 {
             return rule.base_price;
@@ -1092,23 +1121,40 @@ impl MarketplaceContract {
 
         let adjustment = verified_metric_value
             .checked_mul(rule.scale_factor_bps as u128)
-            .unwrap_or(0) / BPS_DENOMINATOR;
+            .unwrap_or(0)
+            / BPS_DENOMINATOR;
 
         if rule.inverse {
             rule.base_price.checked_sub(adjustment).unwrap_or(0)
         } else {
-            1000
+            rule.base_price.checked_add(adjustment).unwrap_or(rule.base_price)
+        }
+    }
+
+    /// Place a bid on an active auction
+    pub fn place_bid(
+        env: Env,
+        auction_id: u64,
+        bidder: Address,
+        amount: u128,
+    ) {
+        bidder.require_auth();
+        
+        let mut auction = get_auction(&env, auction_id).expect("Auction not found");
+        assert!(auction.status == AuctionStatus::Active, "Auction is not active");
+        
+        // Calculate minimum required bid (10% increment over current highest bid)
+        let computed_min_step = if auction.highest_bid > 0 {
+            (auction.highest_bid * 1000) / 10000 // 10% minimum increment
+        } else {
+            0
         };
+        
         let min_bid = if auction.highest_bid > 0 {
             auction.highest_bid + computed_min_step
         } else {
-            // No bids yet: require at least the start price (or start price + min step)
-            let baseline = auction.start_price;
-            if baseline > computed_min_step {
-                baseline
-            } else {
-                computed_min_step
-            }
+            // No bids yet: require at least the start price
+            auction.start_price
         };
 
         assert!(amount >= min_bid, "Bid too low");

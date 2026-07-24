@@ -273,7 +273,7 @@ impl CreditScoreNFT {
         // Verify caller is authorized
         Self::verify_verification_authority(&env, &verifier)?;
 
-        let mut nft = Self::get_nft(&env, token_id)?;
+        let mut nft = Self::get_nft(env, token_id)?;
 
         // Update verification status
         nft.verification_status = VerificationStatus::Verified;
@@ -326,7 +326,7 @@ impl CreditScoreNFT {
             return Err(ContractError::InvalidInput);
         }
 
-        let mut nft = Self::get_nft(&env, token_id)?;
+        let mut nft = Self::get_nft(env, token_id)?;
         let old_score = nft.credit_score;
 
         // Update score and expiration
@@ -372,7 +372,7 @@ impl CreditScoreNFT {
     ) -> Result<(), ContractError> {
         from.require_auth();
 
-        let mut nft = Self::get_nft(&env, token_id)?;
+        let mut nft = Self::get_nft(env, token_id)?;
 
         // Verify ownership
         if nft.owner != from {
@@ -412,23 +412,23 @@ impl CreditScoreNFT {
 
     /// Get NFT by token ID
     pub fn get_nft(env: Env, token_id: u64) -> Result<CreditScoreNFT, ContractError> {
-        Self::get_nft(&env, token_id)
+        Self::get_nft(env, token_id)
     }
 
     /// Get NFT metadata
     pub fn get_metadata(env: Env, token_id: u64) -> Result<CreditScoreMetadata, ContractError> {
-        Self::get_metadata(&env, token_id)
+        Self::get_metadata(env, token_id)
     }
 
     /// Get NFT owner
     pub fn owner_of(env: Env, token_id: u64) -> Result<Address, ContractError> {
-        let nft = Self::get_nft(&env, token_id)?;
+        let nft = Self::get_nft(env, token_id)?;
         Ok(nft.owner)
     }
 
     /// Check if NFT is verified
     pub fn is_verified(env: Env, token_id: u64) -> Result<bool, ContractError> {
-        let nft = Self::get_nft(&env, token_id)?;
+        let nft = Self::get_nft(env, token_id)?;
         Ok(nft.verification_status == VerificationStatus::Verified)
     }
 
@@ -438,7 +438,7 @@ impl CreditScoreNFT {
         let mut owned_tokens = Vec::new(&env);
 
         for token_id in 1..=counter {
-            if let Ok(nft) = Self::get_nft(&env, token_id) {
+            if let Some(nft) = Self::get_nft(env, token_id).ok() {
                 if nft.owner == owner {
                     owned_tokens.push_back(token_id);
                 }
