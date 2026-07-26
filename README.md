@@ -72,6 +72,11 @@ Replace names below with the repository's actual contract filenames and modules.
   - Supports cliffs, batch beneficiary schedules, beneficiary claims, admin schedule edits, revocation, and early withdrawal penalties.
   - Emits lifecycle events for schedule creation, claims, batch funding, modifications, revocations, and early exits.
 
+- FeeDistribution (fee-distribution)
+  - Collects protocol fees from transactions and holds them in custody for distribution.
+  - Supports configurable recipient categories (treasury, stakers, developers, etc.) with percentage-based shares, batched distribution and claims, fee exemptions, and distribution history for analytics.
+  - Fee rate is governance-adjustable within a bounded step per call, with a separate emergency override and a hard-coded ceiling.
+
 - MembershipSubscription (membership-subscription)
   - Tiered membership contract for recurring Soroban token subscriptions.
   - Supports trials, pull-based renewals, cancellation refunds, pause/resume, tier changes with proration, referral rewards, benefit entitlement checks, and subscription analytics.
