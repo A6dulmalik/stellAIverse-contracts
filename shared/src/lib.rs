@@ -34,6 +34,7 @@ pub enum ModuleId {
     Waitlist = 21,
     MultisigWaitlist = 22,
     BridgeManager = 23,
+    Amm = 24,
 }
 
 // ============================================================================
