@@ -4,7 +4,10 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
-use stellai_lib::{WorkflowStep, WorkflowStepStatus};
+use stellai_lib::{
+    AuctionType, RoyaltyConfig, RoyaltyRecipient, SealedCommit, SealedReveal, WorkflowStep,
+    WorkflowStepStatus,
+};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -28,6 +31,24 @@ const TRANSACTION_HISTORY_PREFIX: &str = "txn_";
 const PLATFORM_FEE_KEY: &str = "plat_fee";
 const DEFAULT_LISTING_DURATION: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
 const MIN_BID_INCREMENT_BPS: u32 = 100; // 1% minimum bid increment
+
+// ── NFT Marketplace Trading + Auction extension constants ─────────────────────
+const COLLECTION_CTR_KEY: &str = "coll_ctr";
+const COLLECTION_PREFIX: &str = "coll_";
+const COLLECTION_ROYALTY_PREFIX: &str = "rcoll_";
+const COUNTER_OFFER_CTR_KEY: &str = "cofr_ctr";
+const COUNTER_OFFER_PREFIX: &str = "cofr_";
+const SEALED_COMMIT_PREFIX: &str = "scomm_";
+const SEALED_REVEAL_PREFIX: &str = "srev_";
+const GOV_ROLE_KEY: &str = "gov_role";
+const KYC_ROLE_KEY: &str = "kyc_role";
+const MAX_COLLECTION_NAME_LEN: u32 = 64;
+const MAX_BATCH_SIZE: u32 = 25;
+const DEFAULT_COUNTER_OFFER_DAYS: u64 = 5;
+#[allow(dead_code)]
+const AUCTION_TYPE_DUTCH: u32 = 1;
+#[allow(dead_code)]
+const AUCTION_TYPE_SEALED: u32 = 2;
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
@@ -79,6 +100,31 @@ pub struct PlatformFeeConfig {
     pub max_fee: Option<i128>,
 }
 
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct Collection {
+    pub collection_id: u64,
+    pub creator: Address,
+    pub name: String,
+    pub members: Vec<u64>,
+    pub royalty_config: RoyaltyConfig,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Clone)]
+#[soroban_sdk::contracttype]
+pub struct CounterOffer {
+    pub counter_id: u64,
+    pub listing_id: u64,
+    pub in_response_to_offer_id: u64,
+    pub by_seller: Address,
+    pub amount: i128,
+    pub active: bool,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -103,6 +149,12 @@ impl Marketplace {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, AUCTION_CTR_KEY), &0u64);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, COLLECTION_CTR_KEY), &0u64);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, COUNTER_OFFER_CTR_KEY), &0u64);
         env.storage()
             .instance()
             .set(&Symbol::new(&env, OFFER_CTR_KEY), &0u64);
@@ -390,28 +442,18 @@ impl Marketplace {
         let psk = Self::pending_sale_key(&env, listing_id);
         let pending: PendingSale = env.storage().instance().get(&psk).expect("No pending sale");
 
-        let royalty_key = Self::royalty_key(&env, listing.asset_id);
-        let royalty_info: Option<stellai_lib::RoyaltyInfo> =
-            env.storage().instance().get(&royalty_key);
-
-        let royalty_amount: i128 = if let Some(ref r) = royalty_info {
-            if r.fee > stellai_lib::MAX_ROYALTY_PERCENTAGE {
-                panic!("Invalid royalty percentage");
-            }
-            pending
-                .amount
-                .checked_mul(r.fee as i128)
-                .expect("Royalty overflow")
-                .checked_div(10_000)
-                .expect("Royalty division")
-        } else {
-            0
-        };
+        // Royalty resolution: try multi-recipient RoyaltyConfig first
+        // (set via `set_collection_royalty`), then fall back to single-recipient
+        // RoyaltyInfo (legacy `set_royalty`), then no royalty.
+        let (royalty_amount, platform_fee) =
+            Self::compute_settlement_fees(&env, listing.asset_id, pending.amount);
 
         let seller_amount = pending
             .amount
             .checked_sub(royalty_amount)
-            .expect("Seller amount underflow");
+            .expect("Seller amount underflow")
+            .checked_sub(platform_fee)
+            .expect("Platform-fee underflow");
 
         let mut agent = Self::load_agent(&env, listing.asset_id);
         agent.escrow_locked = false;
@@ -423,6 +465,19 @@ impl Marketplace {
         let lk = Self::listing_key(&env, listing_id);
         env.storage().instance().set(&lk, &listing);
 
+        // Persist settlement record (unified with auctions).
+        Self::record_transaction(
+            &env,
+            listing_id,
+            listing.asset_id,
+            listing.seller.clone(),
+            pending.buyer.clone(),
+            pending.amount,
+            royalty_amount,
+            platform_fee,
+            String::from_str(&env, "sale"),
+        );
+
         env.storage().instance().remove(&psk);
 
         env.events().publish(
@@ -433,6 +488,7 @@ impl Marketplace {
                 pending.buyer.clone(),
                 seller_amount,
                 royalty_amount,
+                platform_fee,
             ),
         );
         env.events().publish(
@@ -1355,6 +1411,898 @@ impl Marketplace {
     }
 
     // =========================================================================
+    // BATCH OPERATIONS — Issue #289 acceptance criterion #4
+    // =========================================================================
+
+    /// Create up to MAX_BATCH_SIZE listings in a single auth.
+    /// Panics on the first invariant violation so that partial state is
+    /// visible to the caller (Soroban contracts roll back the txn).
+    pub fn batch_create_listings(
+        env: Env,
+        seller: Address,
+        listing_type: u32,
+        price: i128,
+        agent_ids: Vec<u64>,
+    ) -> Vec<u64> {
+        seller.require_auth();
+        let count = agent_ids.len();
+        if count == 0 || count > MAX_BATCH_SIZE {
+            panic!("Batch size out of bounds");
+        }
+        if listing_type > 2 {
+            panic!("Invalid listing type");
+        }
+        if !(stellai_lib::PRICE_LOWER_BOUND..=stellai_lib::PRICE_UPPER_BOUND).contains(&price) {
+            panic!("Price out of valid range");
+        }
+        let listing_type_enum = match listing_type {
+            0 => stellai_lib::ListingType::Sale,
+            1 => stellai_lib::ListingType::Lease,
+            2 => stellai_lib::ListingType::Auction,
+            _ => panic!("Invalid listing type"),
+        };
+        let mut listing_ids: Vec<u64> = Vec::new(&env);
+        let current_time = env.ledger().timestamp();
+        let expires_at = current_time
+            .checked_add(DEFAULT_LISTING_DURATION)
+            .expect("Expiry overflow");
+        let marketplace = env.current_contract_address();
+        for i in 0..count {
+            let agent_id = agent_ids.get(i).expect("agent id missing");
+            if agent_id == 0 {
+                panic!("Invalid agent ID");
+            }
+            let agent = Self::load_agent(&env, agent_id);
+            if agent.owner != seller {
+                panic!("Only agent owner can create listings");
+            }
+            if agent.escrow_locked {
+                panic!("Agent already locked in escrow");
+            }
+            let listing_id = Self::next_listing_id(&env);
+            let listing = stellai_lib::Listing {
+                listing_id,
+                asset_id: agent_id,
+                asset_type: stellai_lib::AssetType::Agent,
+                seller: seller.clone(),
+                price,
+                listing_type: listing_type_enum,
+                active: true,
+                created_at: current_time,
+                expires_at,
+            };
+            let lk = Self::listing_key(&env, listing_id);
+            env.storage().instance().set(&lk, &listing);
+            let mut updated_agent = agent;
+            updated_agent.escrow_locked = true;
+            updated_agent.escrow_holder = Some(marketplace.clone());
+            updated_agent.updated_at = current_time;
+            Self::save_agent(&env, agent_id, &updated_agent);
+            env.events().publish(
+                (symbol_short!("lst_creat"),),
+                (listing_id, agent_id, seller.clone(), price),
+            );
+            listing_ids.push_back(listing_id);
+        }
+        env.events()
+            .publish((symbol_short!("batch_lst"),), (seller, count, current_time));
+        listing_ids
+    }
+
+    /// Cancel up to MAX_BATCH_SIZE listings owned by `seller` in a single auth.
+    /// Returns the number of listings actually transitioned to inactive.
+    pub fn batch_cancel_listings(env: Env, seller: Address, listing_ids: Vec<u64>) -> u32 {
+        seller.require_auth();
+        let count = listing_ids.len();
+        if count == 0 || count > MAX_BATCH_SIZE {
+            panic!("Batch size out of bounds");
+        }
+        let mut cancelled: u32 = 0;
+        let marketplace = env.current_contract_address();
+        for i in 0..count {
+            let listing_id = listing_ids.get(i).expect("listing id missing");
+            let mut listing = match Self::try_load_listing(&env, listing_id) {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            if listing.seller != seller || !listing.active {
+                continue;
+            }
+            if let Ok(mut agent) = Self::try_load_agent(&env, listing.asset_id) {
+                if agent.escrow_locked {
+                    if let Some(h) = &agent.escrow_holder {
+                        if h == &marketplace {
+                            agent.escrow_locked = false;
+                            agent.escrow_holder = None;
+                            agent.updated_at = env.ledger().timestamp();
+                            agent.nonce = agent.nonce.checked_add(1).expect("Nonce overflow");
+                            Self::save_agent(&env, listing.asset_id, &agent);
+                        }
+                    }
+                }
+            }
+            listing.active = false;
+            let lk = Self::listing_key(&env, listing_id);
+            env.storage().instance().set(&lk, &listing);
+            cancelled = cancelled.checked_add(1).expect("Counter overflow");
+            env.events().publish(
+                (symbol_short!("lst_cncl"),),
+                (listing_id, listing.asset_id, seller.clone()),
+            );
+        }
+        env.events().publish(
+            (symbol_short!("batch_cnl"),),
+            (seller, cancelled, env.ledger().timestamp()),
+        );
+        cancelled
+    }
+
+    // =========================================================================
+    // COLLECTION MANAGEMENT — Issue #289 acceptance criterion #3
+    // =========================================================================
+
+    pub fn create_collection(env: Env, creator: Address, name: String, royalty_bps: u32) -> u64 {
+        creator.require_auth();
+        if name.is_empty() || name.len() > MAX_COLLECTION_NAME_LEN {
+            panic!("Invalid collection name");
+        }
+        if royalty_bps > stellai_lib::MAX_ROYALTY_PERCENTAGE {
+            panic!("Royalty exceeds maximum");
+        }
+        let collection_id = Self::next_collection_id(&env);
+        let current_time = env.ledger().timestamp();
+        let recipients: Vec<RoyaltyRecipient> = Vec::new(&env);
+        let config = RoyaltyConfig {
+            recipients,
+            total_bps: royalty_bps,
+            min_threshold: 0i128,
+            max_cap: None,
+        };
+        let collection = Collection {
+            collection_id,
+            creator: creator.clone(),
+            name,
+            members: Vec::new(&env),
+            royalty_config: config,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+        let ck = Self::collection_key(&env, collection_id);
+        env.storage().instance().set(&ck, &collection);
+        env.events().publish(
+            (symbol_short!("coll_new"),),
+            (collection_id, creator, current_time),
+        );
+        collection_id
+    }
+
+    pub fn add_to_collection(
+        env: Env,
+        creator: Address,
+        collection_id: u64,
+        agent_ids: Vec<u64>,
+    ) -> u32 {
+        creator.require_auth();
+        if collection_id == 0 {
+            panic!("Invalid collection ID");
+        }
+        let mut coll = Self::load_collection(&env, collection_id);
+        if coll.creator != creator {
+            panic!("Only creator can modify collection");
+        }
+        let count = agent_ids.len();
+        if count == 0 || count > MAX_BATCH_SIZE {
+            panic!("Batch size out of bounds");
+        }
+        let mut added: u32 = 0;
+        for i in 0..count {
+            let agent_id = agent_ids.get(i).expect("agent id missing");
+            if agent_id == 0 {
+                panic!("Invalid agent ID");
+            }
+            let mut already_present = false;
+            for j in 0..coll.members.len() {
+                if let Some(m) = coll.members.get(j) {
+                    if m == agent_id {
+                        already_present = true;
+                    }
+                }
+            }
+            if !already_present {
+                coll.members.push_back(agent_id);
+                // Propagate the collection's current RoyaltyConfig to the
+                // member asset so that `compute_settlement_fees(asset_id)`
+                // correctly reads it.
+                let crk = Self::collection_royalty_key(&env, agent_id);
+                env.storage()
+                    .instance()
+                    .set(&crk, &coll.royalty_config.clone());
+                added = added.checked_add(1).expect("Counter overflow");
+            }
+        }
+        coll.updated_at = env.ledger().timestamp();
+        let ck = Self::collection_key(&env, collection_id);
+        env.storage().instance().set(&ck, &coll);
+        env.events().publish(
+            (symbol_short!("coll_add"),),
+            (collection_id, creator, added, env.ledger().timestamp()),
+        );
+        added
+    }
+
+    pub fn remove_from_collection(
+        env: Env,
+        creator: Address,
+        collection_id: u64,
+        agent_ids: Vec<u64>,
+    ) -> u32 {
+        creator.require_auth();
+        if collection_id == 0 {
+            panic!("Invalid collection ID");
+        }
+        let mut coll = Self::load_collection(&env, collection_id);
+        if coll.creator != creator {
+            panic!("Only creator can modify collection");
+        }
+        let count = agent_ids.len();
+        if count == 0 || count > MAX_BATCH_SIZE {
+            panic!("Batch size out of bounds");
+        }
+        let mut removed: u32 = 0;
+        for i in 0..count {
+            let agent_id = agent_ids.get(i).expect("agent id missing");
+            let mut found_idx: u32 = u32::MAX;
+            for j in 0..coll.members.len() {
+                if let Some(m) = coll.members.get(j) {
+                    if m == agent_id {
+                        found_idx = j;
+                    }
+                }
+            }
+            if found_idx != u32::MAX {
+                coll.members.remove(found_idx);
+                // Clear the per-asset RoyaltyConfig propagated at add time so
+                // future sales don't pay this collection's creator royalties
+                // for an asset that's no longer in the collection.
+                let crk = Self::collection_royalty_key(&env, agent_id);
+                env.storage().instance().remove(&crk);
+                removed = removed.checked_add(1).expect("Counter overflow");
+            }
+        }
+        coll.updated_at = env.ledger().timestamp();
+        let ck = Self::collection_key(&env, collection_id);
+        env.storage().instance().set(&ck, &coll);
+        env.events().publish(
+            (symbol_short!("coll_rm"),),
+            (collection_id, creator, removed, env.ledger().timestamp()),
+        );
+        removed
+    }
+
+    pub fn set_collection_royalty(
+        env: Env,
+        creator: Address,
+        collection_id: u64,
+        recipients: Vec<RoyaltyRecipient>,
+        total_bps: u32,
+    ) {
+        creator.require_auth();
+        if collection_id == 0 {
+            panic!("Invalid collection ID");
+        }
+        if total_bps > stellai_lib::MAX_ROYALTY_PERCENTAGE {
+            panic!("Royalty exceeds maximum");
+        }
+        let mut coll = Self::load_collection(&env, collection_id);
+        if coll.creator != creator {
+            panic!("Only creator can modify collection");
+        }
+        let mut sum: u32 = 0;
+        for i in 0..recipients.len() {
+            if let Some(r) = recipients.get(i) {
+                sum = sum.checked_add(r.share_bps).expect("Royalty overflow");
+            }
+        }
+        if sum != total_bps {
+            panic!("Royalty share total mismatch");
+        }
+        let config = RoyaltyConfig {
+            recipients: recipients.clone(),
+            total_bps,
+            min_threshold: 0i128,
+            max_cap: None,
+        };
+        coll.royalty_config = config.clone();
+        coll.updated_at = env.ledger().timestamp();
+        let ck = Self::collection_key(&env, collection_id);
+        env.storage().instance().set(&ck, &coll);
+        // Propagate to every member so compute_settlement_fees(asset_id) sees it.
+        for i in 0..coll.members.len() {
+            if let Some(m) = coll.members.get(i) {
+                let mcrk = Self::collection_royalty_key(&env, m);
+                env.storage().instance().set(&mcrk, &config.clone());
+            }
+        }
+        env.events().publish(
+            (symbol_short!("coll_roy"),),
+            (collection_id, total_bps, env.ledger().timestamp()),
+        );
+    }
+
+    pub fn get_collection(env: Env, collection_id: u64) -> Collection {
+        Self::load_collection(&env, collection_id)
+    }
+
+    pub fn get_collection_items(env: Env, collection_id: u64) -> Vec<u64> {
+        Self::load_collection(&env, collection_id).members
+    }
+
+    // =========================================================================
+    // COUNTER-OFFER SYSTEM — Issue #289 acceptance criterion #2
+    // =========================================================================
+
+    pub fn make_counter_offer(
+        env: Env,
+        seller: Address,
+        offer_id: u64,
+        amount: i128,
+        duration_days: Option<u64>,
+    ) -> u64 {
+        seller.require_auth();
+        if offer_id == 0 {
+            panic!("Invalid offer ID");
+        }
+        if amount <= 0 || amount > stellai_lib::PRICE_UPPER_BOUND {
+            panic!("Invalid counter-offer amount");
+        }
+        let offer = Self::load_offer(&env, offer_id);
+        if !offer.active {
+            panic!("Original offer is not active");
+        }
+        let listing = Self::load_listing(&env, offer.listing_id);
+        if listing.seller != seller {
+            panic!("Only listing seller can counter-offer");
+        }
+        if !listing.active {
+            panic!("Listing is not active");
+        }
+        let counter_id = Self::next_counter_offer_id(&env);
+        let current_time = env.ledger().timestamp();
+        let days = duration_days.unwrap_or(DEFAULT_COUNTER_OFFER_DAYS);
+        let secs = days.checked_mul(24 * 60 * 60).expect("Duration overflow");
+        let expires_at = current_time.checked_add(secs).expect("Expiry overflow");
+        let counter = CounterOffer {
+            counter_id,
+            listing_id: offer.listing_id,
+            in_response_to_offer_id: offer_id,
+            by_seller: seller.clone(),
+            amount,
+            active: true,
+            created_at: current_time,
+            expires_at,
+        };
+        let ck = Self::counter_offer_key(&env, counter_id);
+        env.storage().instance().set(&ck, &counter);
+        env.events().publish(
+            (symbol_short!("cofr_made"),),
+            (counter_id, offer_id, seller, amount, expires_at),
+        );
+        counter_id
+    }
+
+    pub fn accept_counter_offer(env: Env, offerer: Address, counter_id: u64) -> (u64, u64) {
+        offerer.require_auth();
+        if counter_id == 0 {
+            panic!("Invalid counter ID");
+        }
+        let mut counter: CounterOffer = env
+            .storage()
+            .instance()
+            .get(&Self::counter_offer_key(&env, counter_id))
+            .expect("Counter offer not found");
+        if !counter.active {
+            panic!("Counter offer is not active");
+        }
+        if counter.expires_at < env.ledger().timestamp() {
+            panic!("Counter offer has expired");
+        }
+        let original_offer = Self::load_offer(&env, counter.in_response_to_offer_id);
+        if original_offer.offerer != offerer {
+            panic!("Only original offerer can accept counter");
+        }
+        counter.active = false;
+        env.storage()
+            .instance()
+            .set(&Self::counter_offer_key(&env, counter_id), &counter);
+        // Mark the original offer as inactive
+        let mut orig = original_offer;
+        orig.active = false;
+        env.storage().instance().set(
+            &Self::offer_key(&env, counter.in_response_to_offer_id),
+            &orig,
+        );
+        Self::buy_agent(env, counter.listing_id, offerer, counter.amount)
+    }
+
+    pub fn reject_counter_offer(env: Env, caller: Address, counter_id: u64) {
+        caller.require_auth();
+        let mut counter: CounterOffer = env
+            .storage()
+            .instance()
+            .get(&Self::counter_offer_key(&env, counter_id))
+            .expect("Counter offer not found");
+        let original_offer = Self::load_offer(&env, counter.in_response_to_offer_id);
+        if counter.by_seller != caller && original_offer.offerer != caller {
+            panic!("Only involved parties can reject counter");
+        }
+        if counter.active {
+            counter.active = false;
+            env.storage()
+                .instance()
+                .set(&Self::counter_offer_key(&env, counter_id), &counter);
+            env.events().publish(
+                (symbol_short!("cofr_rjct"),),
+                (counter_id, caller, env.ledger().timestamp()),
+            );
+        }
+    }
+
+    // =========================================================================
+    // DUTCH AUCTION — Issue #289 acceptance criterion #5
+    // =========================================================================
+
+    pub fn create_dutch_auction(
+        env: Env,
+        agent_id: u64,
+        seller: Address,
+        start_price: i128,
+        reserve_price: i128,
+        duration_days: u64,
+    ) -> u64 {
+        seller.require_auth();
+        if agent_id == 0 {
+            panic!("Invalid agent ID");
+        }
+        if start_price <= 0 || reserve_price < 0 || start_price < reserve_price {
+            panic!("Invalid Dutch auction price bounds");
+        }
+        if duration_days == 0 || duration_days > 365 {
+            panic!("Invalid auction duration");
+        }
+        let agent = Self::load_agent(&env, agent_id);
+        if agent.owner != seller {
+            panic!("Only owner can create auctions");
+        }
+        if agent.escrow_locked {
+            panic!("Agent already locked in escrow");
+        }
+        let auction_id = Self::next_auction_id(&env);
+        let now = env.ledger().timestamp();
+        let secs = duration_days
+            .checked_mul(24 * 60 * 60)
+            .expect("Duration overflow");
+        let end_time = now.checked_add(secs).expect("end_time overflow");
+        let marketplace = env.current_contract_address();
+        let mut updated_agent = agent;
+        updated_agent.escrow_locked = true;
+        updated_agent.escrow_holder = Some(marketplace.clone());
+        updated_agent.updated_at = now;
+        Self::save_agent(&env, agent_id, &updated_agent);
+        let auction = stellai_lib::Auction {
+            auction_id,
+            agent_id,
+            seller: seller.clone(),
+            auction_type: AuctionType::Dutch,
+            start_price,
+            reserve_price,
+            current_price: start_price,
+            highest_bidder: None,
+            highest_bid: 0,
+            start_time: now,
+            end_time,
+            min_bid_increment_bps: MIN_BID_INCREMENT_BPS,
+            status: stellai_lib::AuctionStatus::Active,
+            dutch_config: Some(Bytes::from_array(&env, &now.to_be_bytes())),
+            sealed_commit_end: None,
+            sealed_reveal_end: None,
+        };
+        let ak = Self::auction_key(&env, auction_id);
+        env.storage().instance().set(&ak, &auction);
+        env.events().publish(
+            (symbol_short!("dutch_new"),),
+            (auction_id, agent_id, seller, start_price, end_time),
+        );
+        auction_id
+    }
+
+    /// Buy-now on a Dutch auction. Accepts `bid_amount` if at-or-above the
+    /// current linearly-decayed price and at-or-above reserve.
+    pub fn dutch_buy_now(env: Env, auction_id: u64, buyer: Address, bid_amount: i128) {
+        buyer.require_auth();
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+        if bid_amount <= 0 {
+            panic!("Bid amount must be positive");
+        }
+        let mut auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+        if auction.auction_type != AuctionType::Dutch {
+            panic!("Auction is not Dutch");
+        }
+        if auction.status != stellai_lib::AuctionStatus::Active {
+            panic!("Dutch auction is not active");
+        }
+        let now = env.ledger().timestamp();
+        if now > auction.end_time {
+            panic!("Dutch auction has ended");
+        }
+        // Hard timelock: bid must be AFTER auction start_time
+        if now < auction.start_time {
+            panic!("Dutch auction has not started");
+        }
+        // Linear price decay: start_price -> reserve_price across [start, end]
+        let decay_price = Self::dutch_current_price(&env, &auction);
+        if bid_amount < decay_price {
+            panic!("Bid below current Dutch price");
+        }
+        if bid_amount < auction.reserve_price {
+            panic!("Bid below reserve price");
+        }
+        auction.highest_bidder = Some(buyer.clone());
+        auction.highest_bid = bid_amount;
+        auction.current_price = bid_amount;
+        auction.status = stellai_lib::AuctionStatus::Won;
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
+        Self::process_auction_sale(&env, &auction, buyer);
+    }
+
+    // =========================================================================
+    // SEALED-BID AUCTION — Issue #289 acceptance criterion #5
+    // =========================================================================
+
+    pub fn create_sealed_bid_auction(
+        env: Env,
+        agent_id: u64,
+        seller: Address,
+        start_price: i128,
+        reserve_price: i128,
+        commit_duration_secs: u64,
+        reveal_duration_secs: u64,
+    ) -> u64 {
+        seller.require_auth();
+        if agent_id == 0 || start_price <= 0 || reserve_price <= 0 {
+            panic!("Invalid sealed-bid auction params");
+        }
+        if reserve_price > start_price {
+            panic!("Reserve cannot exceed start");
+        }
+        if commit_duration_secs == 0 || reveal_duration_secs <= commit_duration_secs {
+            panic!("Invalid sealed-bid timeline");
+        }
+        let agent = Self::load_agent(&env, agent_id);
+        if agent.owner != seller {
+            panic!("Only owner can create auctions");
+        }
+        if agent.escrow_locked {
+            panic!("Agent already locked in escrow");
+        }
+        let auction_id = Self::next_auction_id(&env);
+        let now = env.ledger().timestamp();
+        let commit_end = now
+            .checked_add(commit_duration_secs)
+            .expect("commit-end overflow");
+        let reveal_end = commit_end
+            .checked_add(reveal_duration_secs)
+            .expect("reveal-end overflow");
+        let marketplace = env.current_contract_address();
+        let mut updated_agent = agent;
+        updated_agent.escrow_locked = true;
+        updated_agent.escrow_holder = Some(marketplace.clone());
+        updated_agent.updated_at = now;
+        Self::save_agent(&env, agent_id, &updated_agent);
+        let auction = stellai_lib::Auction {
+            auction_id,
+            agent_id,
+            seller: seller.clone(),
+            auction_type: stellai_lib::AuctionType::Sealed,
+            start_price,
+            reserve_price,
+            current_price: start_price,
+            highest_bidder: None,
+            highest_bid: 0,
+            start_time: now,
+            end_time: reveal_end,
+            min_bid_increment_bps: MIN_BID_INCREMENT_BPS,
+            status: stellai_lib::AuctionStatus::Active,
+            dutch_config: None,
+            sealed_commit_end: Some(commit_end),
+            sealed_reveal_end: Some(reveal_end),
+        };
+        let ak = Self::auction_key(&env, auction_id);
+        env.storage().instance().set(&ak, &auction);
+        env.events().publish(
+            (symbol_short!("seal_new"),),
+            (auction_id, agent_id, seller, start_price, reveal_end),
+        );
+        auction_id
+    }
+
+    pub fn commit_bid(
+        env: Env,
+        auction_id: u64,
+        bidder: Address,
+        commitment: Bytes,
+        deposit: i128,
+    ) {
+        bidder.require_auth();
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+        if deposit <= 0 {
+            panic!("Deposit must be positive");
+        }
+        let auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+        if auction.auction_type != stellai_lib::AuctionType::Sealed {
+            panic!("Auction is not sealed");
+        }
+        let now = env.ledger().timestamp();
+        let commit_end = auction.sealed_commit_end.expect("missing commit end");
+        if now > commit_end {
+            panic!("Commit phase has ended");
+        }
+        let commit = SealedCommit {
+            bidder: bidder.clone(),
+            commitment,
+            deposit,
+            timestamp: now,
+        };
+        let key = Self::sealed_commit_key(&env, auction_id, &bidder);
+        env.storage().instance().set(&key, &commit);
+        env.events().publish(
+            (symbol_short!("scm_made"),),
+            (auction_id, bidder, deposit, now),
+        );
+    }
+
+    pub fn reveal_bid(env: Env, auction_id: u64, bidder: Address, amount: i128, nonce: String) {
+        bidder.require_auth();
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+        if amount <= 0 {
+            panic!("Reveal amount must be positive");
+        }
+        let mut auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+        if auction.auction_type != stellai_lib::AuctionType::Sealed {
+            panic!("Auction is not sealed");
+        }
+        let now = env.ledger().timestamp();
+        let commit_end = auction.sealed_commit_end.expect("missing commit end");
+        let reveal_end = auction.sealed_reveal_end.expect("missing reveal end");
+        if now <= commit_end {
+            panic!("Reveal phase has not started");
+        }
+        if now > reveal_end {
+            panic!("Reveal phase has ended");
+        }
+        let key = Self::sealed_commit_key(&env, auction_id, &bidder);
+        let commit: SealedCommit = env
+            .storage()
+            .instance()
+            .get(&key)
+            .expect("No commit found for this bidder");
+        let reveal = SealedReveal {
+            bidder: bidder.clone(),
+            amount,
+            nonce,
+            deposit: commit.deposit,
+            timestamp: now,
+        };
+        let rk = Self::sealed_reveal_key(&env, auction_id, &bidder);
+        env.storage().instance().set(&rk, &reveal);
+        // Track the highest reveal on the auction so finalize can pick the winner.
+        if amount > auction.highest_bid {
+            auction.highest_bidder = Some(bidder.clone());
+            auction.highest_bid = amount;
+            auction.current_price = amount;
+            env.storage()
+                .instance()
+                .set(&Self::auction_key(&env, auction_id), &auction);
+        }
+        env.events().publish(
+            (symbol_short!("srev_done"),),
+            (auction_id, bidder, amount, now),
+        );
+    }
+
+    pub fn finalize_sealed_auction(env: Env, auction_id: u64) {
+        if auction_id == 0 {
+            panic!("Invalid auction ID");
+        }
+        let mut auction: stellai_lib::Auction = env
+            .storage()
+            .instance()
+            .get(&Self::auction_key(&env, auction_id))
+            .expect("Auction not found");
+        if auction.auction_type != stellai_lib::AuctionType::Sealed {
+            panic!("Auction is not sealed");
+        }
+        let now = env.ledger().timestamp();
+        let reveal_end = auction.sealed_reveal_end.expect("missing reveal end");
+        if now <= reveal_end {
+            panic!("Reveal phase has not ended");
+        }
+        if auction.status != stellai_lib::AuctionStatus::Active {
+            panic!("Auction already processed");
+        }
+        if auction.highest_bidder.is_some() && auction.highest_bid >= auction.reserve_price {
+            auction.status = stellai_lib::AuctionStatus::Won;
+            let winner = auction.highest_bidder.clone().expect("winner present");
+            Self::process_auction_sale(&env, &auction, winner);
+        } else {
+            auction.status = stellai_lib::AuctionStatus::Ended;
+            Self::cancel_auction_asset_return(&env, &auction);
+            env.events().publish(
+                (symbol_short!("seal_end"),),
+                (auction_id, auction.reserve_price, auction.highest_bid, now),
+            );
+        }
+        env.storage()
+            .instance()
+            .set(&Self::auction_key(&env, auction_id), &auction);
+    }
+
+    // =========================================================================
+    // ACCESS CONTROL — Issue #289 acceptance criterion #8
+    // =========================================================================
+
+    pub fn assign_marketplace_governance(env: Env, admin: Address, new_governance: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        let key = Symbol::new(&env, GOV_ROLE_KEY);
+        let mut gov: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut exists = false;
+        for i in 0..gov.len() {
+            if let Some(addr) = gov.get(i) {
+                if addr == new_governance {
+                    exists = true;
+                }
+            }
+        }
+        if !exists {
+            gov.push_back(new_governance.clone());
+            env.storage().instance().set(&key, &gov);
+        }
+        env.events().publish(
+            (symbol_short!("gov_add"),),
+            (new_governance, env.ledger().timestamp()),
+        );
+    }
+
+    pub fn assign_marketplace_kyc_operator(env: Env, admin: Address, new_kyc: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        let key = Symbol::new(&env, KYC_ROLE_KEY);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut exists = false;
+        for i in 0..list.len() {
+            if let Some(addr) = list.get(i) {
+                if addr == new_kyc {
+                    exists = true;
+                }
+            }
+        }
+        if !exists {
+            list.push_back(new_kyc.clone());
+            env.storage().instance().set(&key, &list);
+        }
+        env.events().publish(
+            (symbol_short!("kyc_add"),),
+            (new_kyc, env.ledger().timestamp()),
+        );
+    }
+
+    pub fn remove_marketplace_governance(env: Env, admin: Address, target: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        let key = Symbol::new(&env, GOV_ROLE_KEY);
+        let mut gov: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut found_idx: u32 = u32::MAX;
+        for i in 0..gov.len() {
+            if let Some(addr) = gov.get(i) {
+                if addr == target {
+                    found_idx = i;
+                }
+            }
+        }
+        if found_idx != u32::MAX {
+            gov.remove(found_idx);
+            env.storage().instance().set(&key, &gov);
+            env.events().publish(
+                (symbol_short!("gov_rm"),),
+                (target, env.ledger().timestamp()),
+            );
+        }
+    }
+
+    pub fn remove_marketplace_kyc_operator(env: Env, admin: Address, target: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        let key = Symbol::new(&env, KYC_ROLE_KEY);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut found_idx: u32 = u32::MAX;
+        for i in 0..list.len() {
+            if let Some(addr) = list.get(i) {
+                if addr == target {
+                    found_idx = i;
+                }
+            }
+        }
+        if found_idx != u32::MAX {
+            list.remove(found_idx);
+            env.storage().instance().set(&key, &list);
+            env.events().publish(
+                (symbol_short!("kyc_rm"),),
+                (target, env.ledger().timestamp()),
+            );
+        }
+    }
+
+    #[allow(dead_code)]
+    fn require_governance_or_admin(env: &Env, caller: &Address) {
+        let admin_opt: Option<Address> = env.storage().instance().get(&Symbol::new(env, ADMIN_KEY));
+        if let Some(admin) = admin_opt {
+            if caller == &admin {
+                return;
+            }
+        }
+        let gov_opt: Option<Vec<Address>> = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, GOV_ROLE_KEY));
+        if let Some(gov) = gov_opt {
+            for i in 0..gov.len() {
+                if let Some(addr) = gov.get(i) {
+                    if &addr == caller {
+                        return;
+                    }
+                }
+            }
+        }
+        panic!("Unauthorized");
+    }
+
+    // =========================================================================
     // Queries
     // =========================================================================
 
@@ -1513,6 +2461,146 @@ impl Marketplace {
         }
     }
 
+    // ── Helpers for Issue #289 extensions ───────────────────────────────────
+
+    fn next_collection_id(env: &Env) -> u64 {
+        let key = Symbol::new(env, COLLECTION_CTR_KEY);
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = current.checked_add(1).expect("Collection ID overflow");
+        env.storage().instance().set(&key, &next);
+        next
+    }
+
+    fn next_counter_offer_id(env: &Env) -> u64 {
+        let key = Symbol::new(env, COUNTER_OFFER_CTR_KEY);
+        let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+        let next = current.checked_add(1).expect("Counter-offer ID overflow");
+        env.storage().instance().set(&key, &next);
+        next
+    }
+
+    fn load_collection(env: &Env, collection_id: u64) -> Collection {
+        env.storage()
+            .instance()
+            .get(&Self::collection_key(env, collection_id))
+            .expect("Collection not found")
+    }
+
+    fn collection_key(env: &Env, collection_id: u64) -> (String, u64) {
+        (String::from_str(env, COLLECTION_PREFIX), collection_id)
+    }
+
+    fn collection_royalty_key(env: &Env, collection_id_id: u64) -> (String, u64) {
+        (
+            String::from_str(env, COLLECTION_ROYALTY_PREFIX),
+            collection_id_id,
+        )
+    }
+
+    fn counter_offer_key(env: &Env, counter_id: u64) -> (String, u64) {
+        (String::from_str(env, COUNTER_OFFER_PREFIX), counter_id)
+    }
+
+    fn sealed_commit_key(env: &Env, auction_id: u64, bidder: &Address) -> (String, u64, Address) {
+        (
+            String::from_str(env, SEALED_COMMIT_PREFIX),
+            auction_id,
+            bidder.clone(),
+        )
+    }
+
+    fn sealed_reveal_key(env: &Env, auction_id: u64, bidder: &Address) -> (String, u64, Address) {
+        (
+            String::from_str(env, SEALED_REVEAL_PREFIX),
+            auction_id,
+            bidder.clone(),
+        )
+    }
+
+    fn load_offer(env: &Env, offer_id: u64) -> Offer {
+        env.storage()
+            .instance()
+            .get(&Self::offer_key(env, offer_id))
+            .expect("Offer not found")
+    }
+
+    /// Compute the current linearly decayed Dutch-auction price.
+    #[allow(clippy::cast_sign_loss)]
+    fn dutch_current_price(env: &Env, auction: &stellai_lib::Auction) -> i128 {
+        let now = env.ledger().timestamp();
+        let window = auction.end_time.saturating_sub(auction.start_time);
+        if window == 0 {
+            return auction.reserve_price;
+        }
+        if now <= auction.start_time {
+            return auction.start_price;
+        }
+        if now >= auction.end_time {
+            return auction.reserve_price;
+        }
+        let drop = auction.start_price.saturating_sub(auction.reserve_price);
+        let elapsed = now.saturating_sub(auction.start_time);
+        let percent = drop.saturating_mul(elapsed as i128) / (window as i128);
+        auction.start_price.saturating_sub(percent)
+    }
+
+    /// Compute (royalty_amount, platform_fee_amount) for a sale.
+    /// Tries RoyaltyConfig (multi-recipient) first, then falls back to
+    /// RoyaltyInfo (single recipient), then 0 royalty. Platform fee always
+    /// taken from PlatformFeeConfig (always set after init).
+    #[allow(clippy::cast_sign_loss)]
+    fn compute_settlement_fees(env: &Env, asset_id: u64, amount: i128) -> (i128, i128) {
+        let cfg_key = Self::collection_royalty_key(env, asset_id);
+        let royalty_config: Option<stellai_lib::RoyaltyConfig> =
+            env.storage().instance().get(&cfg_key);
+        let royalty_amount: i128 = if let Some(cfg) = royalty_config {
+            if cfg.total_bps > stellai_lib::MAX_ROYALTY_PERCENTAGE {
+                panic!("Invalid royalty percentage");
+            }
+            let mut total: i128 = 0i128;
+            for i in 0..cfg.recipients.len() {
+                if let Some(r) = cfg.recipients.get(i) {
+                    if r.share_bps > stellai_lib::MAX_ROYALTY_PERCENTAGE {
+                        panic!("Invalid recipient share");
+                    }
+                    let part = amount
+                        .checked_mul(r.share_bps as i128)
+                        .expect("share overflow")
+                        .checked_div(10_000)
+                        .expect("share div");
+                    total = total.checked_add(part).expect("total overflow");
+                }
+            }
+            total
+        } else {
+            let rk = Self::royalty_key(env, asset_id);
+            let royalty_info: Option<stellai_lib::RoyaltyInfo> = env.storage().instance().get(&rk);
+            match royalty_info {
+                Some(r) if r.fee <= stellai_lib::MAX_ROYALTY_PERCENTAGE => amount
+                    .checked_mul(r.fee as i128)
+                    .expect("royalty overflow")
+                    .checked_div(10_000)
+                    .expect("royalty div"),
+                _ => 0i128,
+            }
+        };
+        let platform_fee_config: PlatformFeeConfig = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, PLATFORM_FEE_KEY))
+            .expect("Platform fee not configured");
+        let platform_fee = if platform_fee_config.fee_bps > stellai_lib::MAX_ROYALTY_PERCENTAGE {
+            0i128
+        } else {
+            amount
+                .checked_mul(platform_fee_config.fee_bps as i128)
+                .expect("fee overflow")
+                .checked_div(10_000)
+                .expect("fee div")
+        };
+        (royalty_amount, platform_fee)
+    }
+
     fn build_sale_steps(env: &Env, marketplace: &Address, listing_id: u64) -> Vec<WorkflowStep> {
         let encoded = Self::encode_u64(env, listing_id);
 
@@ -1591,7 +2679,8 @@ impl Marketplace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::Env;
 
     fn setup_marketplace(env: &Env) -> (Address, Address) {
         let contract_id = env.register(Marketplace, ());
@@ -2124,5 +3213,473 @@ mod tests {
             let listing: stellai_lib::Listing = env.storage().instance().get(&lk).unwrap();
             assert!(listing.active);
         });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BATCH OPERATIONS — Issue #289 acceptance criterion #4
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn seed_agents_for(env: &Env, contract_id: &Address, owner: &Address, base: u64, count: u32) {
+        for i in 0..count {
+            seed_agent(env, contract_id, base + u64::from(i), owner);
+        }
+    }
+
+    #[test]
+    fn test_batch_create_listings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agents_for(&env, &contract_id, &seller, 100, 3);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let mut ids = Vec::new(&env);
+        ids.push_back(100u64);
+        ids.push_back(101u64);
+        ids.push_back(102u64);
+        let out = client.batch_create_listings(&seller, &0u32, &5_000i128, &ids);
+        assert_eq!(out.len(), 3);
+        assert!(client.get_listing(&out.get(0).unwrap()).active);
+        assert!(client.get_listing(&out.get(2).unwrap()).active);
+    }
+
+    #[test]
+    #[should_panic(expected = "Batch size out of bounds")]
+    fn test_batch_create_listings_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let empty: Vec<u64> = Vec::new(&env);
+        MarketplaceClient::new(&env, &contract_id)
+            .batch_create_listings(&seller, &0u32, &100i128, &empty);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid agent ID")]
+    fn test_batch_create_listings_zero_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agent(&env, &contract_id, 200, &seller);
+        let mut ids = Vec::new(&env);
+        ids.push_back(200u64);
+        ids.push_back(0u64);
+        MarketplaceClient::new(&env, &contract_id)
+            .batch_create_listings(&seller, &0u32, &100i128, &ids);
+    }
+
+    #[test]
+    fn test_batch_cancel_listings() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agents_for(&env, &contract_id, &seller, 300, 3);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let l1 = client.create_listing(&300u64, &seller, &0u32, &100i128, &None);
+        let l2 = client.create_listing(&301u64, &seller, &0u32, &100i128, &None);
+        let l3 = client.create_listing(&302u64, &seller, &0u32, &100i128, &None);
+        let mut ids = Vec::new(&env);
+        ids.push_back(l1);
+        ids.push_back(l2);
+        ids.push_back(l3);
+        let cancelled = client.batch_cancel_listings(&seller, &ids);
+        assert_eq!(cancelled, 3);
+        assert!(!client.get_listing(&l1).active);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // COLLECTIONS — Issue #289 acceptance criterion #3
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_collection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        let cid = MarketplaceClient::new(&env, &contract_id).create_collection(
+            &creator,
+            &String::from_str(&env, "Genesis"),
+            &500u32,
+        );
+        assert_eq!(cid, 1u64);
+        let coll = MarketplaceClient::new(&env, &contract_id).get_collection(&cid);
+        assert_eq!(coll.creator, creator);
+        assert_eq!(coll.royalty_config.total_bps, 500);
+        assert_eq!(coll.members.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid collection name")]
+    fn test_create_collection_empty_name() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        MarketplaceClient::new(&env, &contract_id).create_collection(
+            &creator,
+            &String::from_str(&env, ""),
+            &500u32,
+        );
+    }
+
+    #[test]
+    fn test_add_and_remove_from_collection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let cid = client.create_collection(&creator, &String::from_str(&env, "Drops"), &250u32);
+        let mut ids = Vec::new(&env);
+        ids.push_back(1001u64);
+        ids.push_back(1002u64);
+        ids.push_back(1003u64);
+        let added = client.add_to_collection(&creator, &cid, &ids);
+        assert_eq!(added, 3);
+        assert_eq!(client.get_collection_items(&cid).len(), 3);
+        // Dedup second pass
+        let same: Vec<u64> = ids;
+        let added2 = client.add_to_collection(&creator, &cid, &same);
+        assert_eq!(added2, 0);
+        // Remove one
+        let mut rm = Vec::new(&env);
+        rm.push_back(1002u64);
+        let removed = client.remove_from_collection(&creator, &cid, &rm);
+        assert_eq!(removed, 1);
+        assert_eq!(client.get_collection_items(&cid).len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only creator can modify collection")]
+    fn test_collection_access_control() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let cid = client.create_collection(&creator, &String::from_str(&env, "Locked"), &0u32);
+        let mut ids = Vec::new(&env);
+        ids.push_back(4001u64);
+        client.add_to_collection(&attacker, &cid, &ids);
+    }
+
+    #[test]
+    fn test_set_collection_multi_recipient_royalty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let cid = client.create_collection(&creator, &String::from_str(&env, "Splits"), &0u32);
+        let mut recipients = Vec::new(&env);
+        recipients.push_back(RoyaltyRecipient {
+            recipient: alice.clone(),
+            share_bps: 700u32,
+            role: String::from_str(&env, "creator"),
+        });
+        recipients.push_back(RoyaltyRecipient {
+            recipient: bob.clone(),
+            share_bps: 300u32,
+            role: String::from_str(&env, "collaborator"),
+        });
+        client.set_collection_royalty(&creator, &cid, &recipients, &1000u32);
+        let coll = client.get_collection(&cid);
+        assert_eq!(coll.royalty_config.total_bps, 1000);
+        assert_eq!(coll.royalty_config.recipients.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Royalty share total mismatch")]
+    fn test_set_collection_royalty_total_mismatch() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let creator = Address::generate(&env);
+        let alice = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let cid = client.create_collection(&creator, &String::from_str(&env, "Bad"), &0u32);
+        let mut recipients = Vec::new(&env);
+        recipients.push_back(RoyaltyRecipient {
+            recipient: alice.clone(),
+            share_bps: 500u32,
+            role: String::from_str(&env, "creator"),
+        });
+        client.set_collection_royalty(&creator, &cid, &recipients, &1000u32);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // COUNTER-OFFER — Issue #289 acceptance criterion #2
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_make_and_reject_counter_offer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let offerer = Address::generate(&env);
+        seed_agent(&env, &contract_id, 5000, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let listing_id = client.create_listing(&5000u64, &seller, &0u32, &1_000i128, &None);
+        let offer_id = client.make_offer(&listing_id, &offerer, &800i128, &None);
+        let counter_id = client.make_counter_offer(&seller, &offer_id, &900i128, &None);
+        assert!(counter_id > 0);
+        client.reject_counter_offer(&offerer, &counter_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only listing seller can counter-offer")]
+    fn test_make_counter_offer_non_seller_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let offerer = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        seed_agent(&env, &contract_id, 5100, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let listing_id = client.create_listing(&5100u64, &seller, &0u32, &1_000i128, &None);
+        let offer_id = client.make_offer(&listing_id, &offerer, &800i128, &None);
+        client.make_counter_offer(&stranger, &offer_id, &900i128, &None);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DUTCH AUCTION — Issue #289 acceptance criterion #5
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_dutch_auction() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agent(&env, &contract_id, 6000, &seller);
+        let auction_id = MarketplaceClient::new(&env, &contract_id)
+            .create_dutch_auction(&6000u64, &seller, &1_000i128, &500i128, &2u64);
+        assert!(auction_id > 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid Dutch auction price bounds")]
+    fn test_create_dutch_auction_invalid_bounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agent(&env, &contract_id, 6001, &seller);
+        MarketplaceClient::new(&env, &contract_id)
+            .create_dutch_auction(&6001u64, &seller, &100i128, &200i128, &1u64);
+    }
+
+    #[test]
+    fn test_dutch_buy_now_happy_path() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        seed_agent(&env, &contract_id, 6300, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let auction_id =
+            client.create_dutch_auction(&6300u64, &seller, &1_000i128, &500i128, &2u64);
+        // Buy at-or-above the start price; succeeds and finalises the sale.
+        client.dutch_buy_now(&auction_id, &buyer, &1_000i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "Bid below current Dutch price")]
+    fn test_dutch_buy_now_below_decay() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        seed_agent(&env, &contract_id, 6400, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        // 1000 -> 0 over 10 seconds
+        let auction_id = client.create_dutch_auction(&6400u64, &seller, &1_000i128, &0i128, &10u64);
+        // Advance 5 seconds; decay should be ~500, bid 100 too low.
+        env.ledger().with_mut(|l| {
+            l.timestamp = 5;
+        });
+        client.dutch_buy_now(&auction_id, &buyer, &100i128);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SEALED-BID AUCTION — Issue #289 acceptance criterion #5
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_sealed_bid_auction() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agent(&env, &contract_id, 7000, &seller);
+        let auction_id = MarketplaceClient::new(&env, &contract_id)
+            .create_sealed_bid_auction(&7000u64, &seller, &1_000i128, &500i128, &60u64, &120u64);
+        assert!(auction_id > 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid sealed-bid timeline")]
+    fn test_create_sealed_bid_zero_commit_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        seed_agent(&env, &contract_id, 7100, &seller);
+        MarketplaceClient::new(&env, &contract_id)
+            .create_sealed_bid_auction(&7100u64, &seller, &1_000i128, &500i128, &0u64, &120u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "Commit phase has ended")]
+    fn test_commit_after_commit_phase() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let bidder = Address::generate(&env);
+        seed_agent(&env, &contract_id, 7200, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let auction_id = client
+            .create_sealed_bid_auction(&7200u64, &seller, &1_000i128, &500i128, &60u64, &120u64);
+        env.ledger().with_mut(|l| {
+            l.timestamp = 1_000_000;
+        });
+        client.commit_bid(
+            &auction_id,
+            &bidder,
+            &Bytes::from_array(&env, &[1u8; 32]),
+            &100i128,
+        );
+    }
+
+    #[test]
+    fn test_commit_and_reveal_sealed_bid() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let bidder = Address::generate(&env);
+        seed_agent(&env, &contract_id, 7300, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let auction_id = client
+            .create_sealed_bid_auction(&7300u64, &seller, &1_000i128, &500i128, &60u64, &120u64);
+        client.commit_bid(
+            &auction_id,
+            &bidder,
+            &Bytes::from_array(&env, &[9u8; 32]),
+            &700i128,
+        );
+        env.ledger().with_mut(|l| {
+            l.timestamp = 100;
+        });
+        client.reveal_bid(
+            &auction_id,
+            &bidder,
+            &700i128,
+            &String::from_str(&env, "nonce-A"),
+        );
+    }
+
+    #[test]
+    fn test_sealed_bid_happy_path_finalize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _) = setup_marketplace(&env);
+        let seller = Address::generate(&env);
+        let bidder_a = Address::generate(&env);
+        let bidder_b = Address::generate(&env);
+        seed_agent(&env, &contract_id, 8000, &seller);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        let auction_id = client
+            .create_sealed_bid_auction(&8000u64, &seller, &1_000i128, &500i128, &60u64, &120u64);
+        // Both commit during the commit window (default t=0; commit_end=60).
+        client.commit_bid(
+            &auction_id,
+            &bidder_a,
+            &Bytes::from_array(&env, &[11u8; 32]),
+            &600i128,
+        );
+        client.commit_bid(
+            &auction_id,
+            &bidder_b,
+            &Bytes::from_array(&env, &[22u8; 32]),
+            &800i128,
+        );
+        // Advance into the reveal window (commit_end < 100 < reveal_end=180).
+        env.ledger().with_mut(|l| {
+            l.timestamp = 100;
+        });
+        client.reveal_bid(
+            &auction_id,
+            &bidder_a,
+            &600i128,
+            &String::from_str(&env, "n-A"),
+        );
+        client.reveal_bid(
+            &auction_id,
+            &bidder_b,
+            &800i128,
+            &String::from_str(&env, "n-B"),
+        );
+        // Finalize after reveal_end.
+        env.ledger().with_mut(|l| {
+            l.timestamp = 1_000;
+        });
+        client.finalize_sealed_auction(&auction_id);
+        env.as_contract(&contract_id, || {
+            let ak = (
+                String::from_str(&env, stellai_lib::AGENT_KEY_PREFIX),
+                8000u64,
+            );
+            let agent: stellai_lib::Agent = env.storage().instance().get(&ak).unwrap();
+            assert_eq!(agent.owner, bidder_b);
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ACCESS CONTROL — Issue #289 acceptance criterion #8
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_assign_and_remove_governance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup_marketplace(&env);
+        let gov = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        client.assign_marketplace_governance(&admin, &gov);
+        client.remove_marketplace_governance(&admin, &gov);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized")]
+    fn test_set_platform_fee_admin_only() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin) = setup_marketplace(&env);
+        let random = Address::generate(&env);
+        MarketplaceClient::new(&env, &contract_id).set_platform_fee(&random, &100u32, &random);
+    }
+
+    #[test]
+    fn test_assign_and_remove_kyc() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin) = setup_marketplace(&env);
+        let kyc = Address::generate(&env);
+        let client = MarketplaceClient::new(&env, &contract_id);
+        client.assign_marketplace_kyc_operator(&admin, &kyc);
+        client.remove_marketplace_kyc_operator(&admin, &kyc);
     }
 }
