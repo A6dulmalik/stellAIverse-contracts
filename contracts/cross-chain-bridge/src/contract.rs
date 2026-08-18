@@ -56,6 +56,7 @@ impl CrossChainBridge {
         // Initialize counters
         env.storage().instance().set(&Symbol::new(&env, TRANSFER_COUNTER_KEY), &0u64);
         env.storage().instance().set(&Symbol::new(&env, VALIDATOR_COUNT_KEY), &0u32);
+        env.storage().instance().set(&Symbol::new(&env, VALIDATOR_LIST_KEY), &Vec::<Address>::new(&env));
         env.storage().instance().set(&Symbol::new(&env, TOKEN_COUNT_KEY), &0u32);
         
         // Initialize total fees
@@ -82,7 +83,7 @@ impl CrossChainBridge {
         admin.require_auth();
 
         // Check if not paused
-        self.ensure_not_paused(&env)?;
+        Self::ensure_not_paused(&env)?;
 
         // Check if validator already exists
         let val_key = validator_key(&env, &validator_address);
@@ -102,6 +103,12 @@ impl CrossChainBridge {
         // Store validator
         env.storage().instance().set(&val_key, &validator);
 
+        let mut validators: Vec<Address> = env.storage().instance()
+            .get(&Symbol::new(&env, VALIDATOR_LIST_KEY))
+            .unwrap_or_else(|| Vec::new(&env));
+        validators.push_back(validator_address.clone());
+        env.storage().instance().set(&Symbol::new(&env, VALIDATOR_LIST_KEY), &validators);
+
         // Update validator count
         let mut count: u32 = env.storage().instance().get(&Symbol::new(&env, VALIDATOR_COUNT_KEY))
             .unwrap_or(0);
@@ -116,6 +123,33 @@ impl CrossChainBridge {
         sig_config.required_signatures = std::cmp::max(required, 1);
         env.storage().instance().set(&Symbol::new(&env, SIGNATURE_CONFIG_KEY), &sig_config);
 
+        Ok(())
+    }
+
+    /// Deactivate a validator without changing historical signatures.
+    pub fn remove_validator(env: Env, validator_address: Address) -> Result<(), BridgeError> {
+        let admin: Address = env.storage().instance().get(&Symbol::new(&env, ADMIN_KEY))
+            .ok_or(BridgeError::Unauthorized)?;
+        admin.require_auth();
+        Self::ensure_not_paused(&env)?;
+
+        let key = validator_key(&env, &validator_address);
+        let mut validator: Validator = env.storage().instance().get(&key)
+            .ok_or(BridgeError::ValidatorNotFound)?;
+        if !validator.is_active {
+            return Err(BridgeError::ValidatorAlreadyRemoved);
+        }
+        validator.is_active = false;
+        env.storage().instance().set(&key, &validator);
+
+        let mut sig_config: SignatureConfig = env.storage().instance()
+            .get(&Symbol::new(&env, SIGNATURE_CONFIG_KEY))
+            .ok_or(BridgeError::InvalidArgument)?;
+        sig_config.total_validators = sig_config.total_validators.saturating_sub(1);
+        let required = (sig_config.total_validators as u64 * sig_config.quorum_percentage as u64 / 100) as u32;
+        sig_config.required_signatures = std::cmp::max(required, 1);
+        env.storage().instance().set(&Symbol::new(&env, SIGNATURE_CONFIG_KEY), &sig_config);
+        env.events().publish((Symbol::new(&env, "validator_removed"),), validator_address);
         Ok(())
     }
 
@@ -134,7 +168,7 @@ impl CrossChainBridge {
             .ok_or(BridgeError::Unauthorized)?;
         admin.require_auth();
 
-        self.ensure_not_paused(&env)?;
+        Self::ensure_not_paused(&env)?;
 
         // Check if token already exists
         let token_key = token_key(&env, &token_address);
@@ -172,11 +206,15 @@ impl CrossChainBridge {
         amount: i128,
         nonce: u64,
     ) -> Result<u64, BridgeError> {
-        self.ensure_not_paused(&env)?;
+        Self::ensure_not_paused(&env)?;
 
         // Validate sender is authenticated
         let sender = env.invoker();
         sender.require_auth();
+
+        if nonce == 0 {
+            return Err(BridgeError::InvalidNonce);
+        }
 
         // Check if nonce has been used
         let nonce_key = nonce_key(&env, &sender, nonce);
@@ -202,7 +240,7 @@ impl CrossChainBridge {
         }
 
         // Check rate limits
-        self.check_rate_limits(&env, &sender, amount)?;
+        Self::check_rate_limits(&env, &sender, amount)?;
 
         // Calculate fee
         let fee_config: FeeConfig = env.storage().instance().get(&Symbol::new(&env, FEE_CONFIG_KEY))
@@ -276,7 +314,7 @@ impl CrossChainBridge {
         transfer_id: u64,
         signatures: Vec<Bytes>,
     ) -> Result<(), BridgeError> {
-        self.ensure_not_paused(&env)?;
+        Self::ensure_not_paused(&env)?;
 
         // Get transfer
         let transfer_key = transfer_key(&env, transfer_id);
@@ -288,8 +326,12 @@ impl CrossChainBridge {
             return Err(BridgeError::InvalidTransferStatus);
         }
 
+        if transfer.status != TransactionStatus::Locked {
+            return Err(BridgeError::TransferAlreadyProcessed);
+        }
+
         // Verify signatures
-        self.verify_transfer_signatures(&env, &transfer, &signatures)?;
+        Self::verify_transfer_signatures(&env, &transfer, &signatures)?;
 
         // Get current chain ID (must be destination chain)
         let current_chain: ChainID = env.storage().instance().get(&Symbol::new(&env, CHAIN_ID_KEY))
@@ -492,13 +534,7 @@ impl CrossChainBridge {
 
             // Find validator that signed
             let mut found = false;
-            // Iterate through all validators (simplified - in production, index validators better)
-            let validator_count: u32 = env.storage().instance().get(&Symbol::new(env, VALIDATOR_COUNT_KEY))
-                .unwrap_or(0);
-            
-            // This is a simplified approach - in production, maintain a list of validator addresses
-            // For this example, we'll scan for active validators
-            for validator_addr in self.get_all_validators(env) {
+            for validator_addr in Self::get_all_validators(env) {
                 if seen_validators.contains(&validator_addr) {
                     continue;
                 }
@@ -537,9 +573,9 @@ impl CrossChainBridge {
 
     /// Helper to get all active validators (simplified)
     fn get_all_validators(env: &Env) -> Vec<Address> {
-        // In a real implementation, maintain a list of validator addresses
-        // This is a placeholder for the example
-        Vec::new(env)
+        env.storage().instance()
+            .get(&Symbol::new(env, VALIDATOR_LIST_KEY))
+            .unwrap_or_else(|| Vec::new(env))
     }
 
     /// Collect fees to fee collector

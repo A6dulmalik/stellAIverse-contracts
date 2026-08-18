@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Symbol};
+use soroban_sdk::{Address, Env, Symbol};
 
 // Storage key constants
 pub const ADMIN_KEY: &str = "bridge_admin";
@@ -9,6 +9,7 @@ pub const TRANSFER_COUNTER_KEY: &str = "tx_counter";
 
 // Validator storage keys
 pub const VALIDATOR_COUNT_KEY: &str = "val_count";
+pub const VALIDATOR_LIST_KEY: &str = "val_list";
 pub const VALIDATOR_PREFIX: &str = "validator_";
 pub const SIGNATURE_CONFIG_KEY: &str = "sig_config";
 

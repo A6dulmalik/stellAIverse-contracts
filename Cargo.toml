@@ -2,6 +2,8 @@
 members = [
     "contracts/amm",
     "contracts/compliance-integration",
+    "contracts/cross-chain-bridge",
+    "contracts/access-control",
     "contracts/execution-hub",
     "contracts/fee-distribution",
     "contracts/membership-subscription",
