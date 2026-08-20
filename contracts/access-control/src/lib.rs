@@ -41,19 +41,31 @@ impl AccessControl {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Initialized, &true);
         for role in Self::all_roles() {
-            env.storage().instance().set(&DataKey::RoleAdmin(role), &Role::Admin);
+            env.storage()
+                .instance()
+                .set(&DataKey::RoleAdmin(role), &Role::Admin);
         }
         Self::set_member(&env, &Role::Admin, &admin, true);
-        Self::publish_role_event(&env, Symbol::new(&env, "RoleGranted"), &Role::Admin, &admin, &admin);
+        Self::publish_role_event(
+            &env,
+            Symbol::new(&env, "RoleGranted"),
+            &Role::Admin,
+            &admin,
+            &admin,
+        );
         Ok(())
     }
 
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
-        env.storage().instance().has(&DataKey::Member(role, account))
+        env.storage()
+            .instance()
+            .has(&DataKey::Member(role, account))
     }
 
     pub fn get_role_admin(env: Env, role: Role) -> Result<Role, AccessControlError> {
-        env.storage().instance().get(&DataKey::RoleAdmin(role))
+        env.storage()
+            .instance()
+            .get(&DataKey::RoleAdmin(role))
             .ok_or(AccessControlError::InvalidRole)
     }
 
@@ -67,7 +79,13 @@ impl AccessControl {
         Self::require_role_admin(&env, &role, &sender)?;
         if !Self::has_role(env.clone(), role, account.clone()) {
             Self::set_member(&env, &role, &account, true);
-            Self::publish_role_event(&env, Symbol::new(&env, "RoleGranted"), &role, &account, &sender);
+            Self::publish_role_event(
+                &env,
+                Symbol::new(&env, "RoleGranted"),
+                &role,
+                &account,
+                &sender,
+            );
         }
         Ok(())
     }
@@ -82,7 +100,13 @@ impl AccessControl {
         Self::require_role_admin(&env, &role, &sender)?;
         if Self::has_role(env.clone(), role, account.clone()) {
             Self::set_member(&env, &role, &account, false);
-            Self::publish_role_event(&env, Symbol::new(&env, "RoleRevoked"), &role, &account, &sender);
+            Self::publish_role_event(
+                &env,
+                Symbol::new(&env, "RoleRevoked"),
+                &role,
+                &account,
+                &sender,
+            );
         }
         Ok(())
     }
@@ -95,7 +119,9 @@ impl AccessControl {
     ) -> Result<(), AccessControlError> {
         sender.require_auth();
         Self::require_role_admin(&env, &role, &sender)?;
-        env.storage().instance().set(&DataKey::RoleAdmin(role), &admin_role);
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleAdmin(role), &admin_role);
         env.events().publish(
             (Symbol::new(&env, "RoleAdminChanged"),),
             (role, admin_role, sender),
@@ -104,11 +130,24 @@ impl AccessControl {
     }
 
     fn all_roles() -> [Role; 5] {
-        [Role::Admin, Role::Minter, Role::Burner, Role::Pauser, Role::Governance]
+        [
+            Role::Admin,
+            Role::Minter,
+            Role::Burner,
+            Role::Pauser,
+            Role::Governance,
+        ]
     }
 
-    fn require_role_admin(env: &Env, role: &Role, sender: &Address) -> Result<(), AccessControlError> {
-        let admin_role: Role = env.storage().instance().get(&DataKey::RoleAdmin(role.clone()))
+    fn require_role_admin(
+        env: &Env,
+        role: &Role,
+        sender: &Address,
+    ) -> Result<(), AccessControlError> {
+        let admin_role: Role = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoleAdmin(*role))
             .ok_or(AccessControlError::InvalidRole)?;
         if Self::has_role(env.clone(), admin_role, sender.clone()) {
             Ok(())
@@ -118,7 +157,7 @@ impl AccessControl {
     }
 
     fn set_member(env: &Env, role: &Role, account: &Address, value: bool) {
-        let key = DataKey::Member(role.clone(), account.clone());
+        let key = DataKey::Member(*role, account.clone());
         if value {
             env.storage().instance().set(&key, &true);
         } else {
@@ -126,8 +165,15 @@ impl AccessControl {
         }
     }
 
-    fn publish_role_event(env: &Env, event: Symbol, role: &Role, account: &Address, sender: &Address) {
-        env.events().publish((event,), (role.clone(), account.clone(), sender.clone()));
+    fn publish_role_event(
+        env: &Env,
+        event: Symbol,
+        role: &Role,
+        account: &Address,
+        sender: &Address,
+    ) {
+        env.events()
+            .publish((event,), (*role, account.clone(), sender.clone()));
     }
 }
 
@@ -143,8 +189,15 @@ mod tests {
         env.mock_all_auths();
         AccessControl::initialize(env.clone(), admin.clone()).unwrap();
 
-        assert!(AccessControl::has_role(env.clone(), Role::Admin, admin.clone()));
-        assert_eq!(AccessControl::get_role_admin(env, Role::Minter).unwrap(), Role::Admin);
+        assert!(AccessControl::has_role(
+            env.clone(),
+            Role::Admin,
+            admin.clone()
+        ));
+        assert_eq!(
+            AccessControl::get_role_admin(env, Role::Minter).unwrap(),
+            Role::Admin
+        );
     }
 
     #[test]
@@ -155,8 +208,13 @@ mod tests {
         env.mock_all_auths();
         AccessControl::initialize(env.clone(), admin.clone()).unwrap();
 
-        AccessControl::grant_role(env.clone(), Role::Minter, minter.clone(), admin.clone()).unwrap();
-        assert!(AccessControl::has_role(env.clone(), Role::Minter, minter.clone()));
+        AccessControl::grant_role(env.clone(), Role::Minter, minter.clone(), admin.clone())
+            .unwrap();
+        assert!(AccessControl::has_role(
+            env.clone(),
+            Role::Minter,
+            minter.clone()
+        ));
         AccessControl::revoke_role(env.clone(), Role::Minter, minter.clone(), admin).unwrap();
         assert!(!AccessControl::has_role(env, Role::Minter, minter));
     }

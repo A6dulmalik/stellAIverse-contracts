@@ -47,4 +47,4 @@ incremental = true
 
 
 [workspace.dependencies]
-soroban-sdk = { version = "22.0.10", default-features = false }
+soroban-sdk = { version = "=22.0.10", default-features = false }

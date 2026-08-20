@@ -1,19 +1,16 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use soroban_sdk::{
-        testutils::Address as _,
-        Address, Bytes, Env, String, Map,
-    };
     use crate::contract::CrossChainBridge;
+    use crate::errors::BridgeError;
     use crate::types::*;
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
 
     #[test]
     fn test_initialize_bridge() {
         let env = Env::default();
         let admin = Address::generate(&env);
-        let contract_id = env.register(CrossChainBridge, ());
-        
+        let _ = env.register(CrossChainBridge, ());
+
         env.mock_all_auths();
 
         // Create configuration
@@ -30,8 +27,8 @@ mod tests {
         };
 
         let rate_config = RateLimitConfig {
-            daily_limit: 1000000000, // 1B
-            monthly_limit: 30000000000, // 30B
+            daily_limit: 1000000000,        // 1B
+            monthly_limit: 30000000000,     // 30B
             per_transaction_max: 100000000, // 100M
             per_transaction_min: 1000,
         };
@@ -53,8 +50,8 @@ mod tests {
     fn test_cannot_initialize_twice() {
         let env = Env::default();
         let admin = Address::generate(&env);
-        let contract_id = env.register(CrossChainBridge, ());
-        
+        let _ = env.register(CrossChainBridge, ());
+
         env.mock_all_auths();
 
         let sig_config = SignatureConfig {
@@ -81,9 +78,9 @@ mod tests {
             env.clone(),
             admin.clone(),
             ChainID::Stellar,
-            sig_config.clone(),
+            sig_config,
             fee_config.clone(),
-            rate_config.clone(),
+            rate_config,
         );
 
         // Second initialization should fail
@@ -105,8 +102,8 @@ mod tests {
         let env = Env::default();
         let admin = Address::generate(&env);
         let validator = Address::generate(&env);
-        let contract_id = env.register(CrossChainBridge, ());
-        
+        let _ = env.register(CrossChainBridge, ());
+
         env.mock_all_auths();
 
         // First initialize
@@ -154,8 +151,8 @@ mod tests {
     fn test_pause_and_unpause() {
         let env = Env::default();
         let admin = Address::generate(&env);
-        let contract_id = env.register(CrossChainBridge, ());
-        
+        let _ = env.register(CrossChainBridge, ());
+
         env.mock_all_auths();
 
         // Initialize
@@ -210,9 +207,8 @@ mod tests {
     fn test_bridge_paused_blocks_transfers() {
         let env = Env::default();
         let admin = Address::generate(&env);
-        let sender = Address::generate(&env);
-        let contract_id = env.register(CrossChainBridge, ());
-        
+        let _ = env.register(CrossChainBridge, ());
+
         env.mock_all_auths();
 
         // Initialize
@@ -250,7 +246,8 @@ mod tests {
         // Try to initiate transfer while paused
         let recipient = Bytes::from_array(&env, &[0u8; 32]);
         let token = Address::generate(&env);
-        
+        let sender = Address::generate(&env);
+
         let result = CrossChainBridge::initiate_transfer(
             env,
             ChainID::Ethereum,
@@ -258,6 +255,7 @@ mod tests {
             token,
             1000000,
             1,
+            sender,
         );
 
         assert!(result.is_err());
