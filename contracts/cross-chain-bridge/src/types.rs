@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, Map, String, Vec};
 
 /// Chain identifier for supported blockchains
 #[contracttype]
@@ -32,7 +32,7 @@ pub enum TransactionStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 #[repr(u32)]
 pub enum TransferDirection {
-    LockAndMint = 0, // Lock on source, mint on destination
+    LockAndMint = 0,   // Lock on source, mint on destination
     BurnAndUnlock = 1, // Burn on destination, unlock on source
 }
 
@@ -70,8 +70,8 @@ pub struct Validator {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub struct RateLimitConfig {
-    pub daily_limit: i128, // Total daily volume limit
-    pub monthly_limit: i128, // Total monthly volume limit
+    pub daily_limit: i128,         // Total daily volume limit
+    pub monthly_limit: i128,       // Total monthly volume limit
     pub per_transaction_max: i128, // Maximum per transfer
     pub per_transaction_min: i128, // Minimum per transfer
 }
@@ -95,16 +95,16 @@ pub struct SupportedToken {
     pub symbol: String,
     pub decimals: u32,
     pub is_mintable: bool, // Whether this token can be minted/burned
-    pub is_locked: bool, // Whether this token uses lock/unlock mechanism
+    pub is_locked: bool,   // Whether this token uses lock/unlock mechanism
     pub bridge_address_on_other_chains: Map<ChainID, Bytes>, // Bridge addresses on other chains
 }
 
 /// Fee configuration
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq, Copy)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeeConfig {
     pub basis_points: u32, // Fee in basis points (1 = 0.01%)
-    pub min_fee: i128, // Minimum fee
+    pub min_fee: i128,     // Minimum fee
     pub fee_collector: Address,
 }
 
@@ -113,6 +113,6 @@ pub struct FeeConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Copy)]
 pub struct SignatureConfig {
     pub required_signatures: u32, // Number of signatures needed
-    pub total_validators: u32, // Total active validators
-    pub quorum_percentage: u32, // Minimum percentage needed (e.g., 67 for 2/3)
+    pub total_validators: u32,    // Total active validators
+    pub quorum_percentage: u32,   // Minimum percentage needed (e.g., 67 for 2/3)
 }

@@ -2,6 +2,8 @@
 members = [
     "contracts/amm",
     "contracts/compliance-integration",
+    "contracts/cross-chain-bridge",
+    "contracts/access-control",
     "contracts/execution-hub",
     "contracts/fee-distribution",
     "contracts/membership-subscription",
@@ -45,4 +47,4 @@ incremental = true
 
 
 [workspace.dependencies]
-soroban-sdk = { version = "22.0.10", default-features = false }
+soroban-sdk = { version = "=22.0.10", default-features = false }
