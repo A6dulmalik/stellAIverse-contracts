@@ -12,6 +12,7 @@ members = [
     "contracts/marketplace",
     "contracts/multisig-wallet",
     "contracts/token-vesting",
+    "contracts/vault",
     "lib",
     "shared",
 ]
