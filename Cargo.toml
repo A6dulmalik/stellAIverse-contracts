@@ -7,6 +7,7 @@ members = [
     "contracts/access-control",
     "contracts/execution-hub",
     "contracts/fee-distribution",
+    "contracts/governance",
     "contracts/membership-subscription",
     "contracts/marketplace",
     "contracts/multisig-wallet",
