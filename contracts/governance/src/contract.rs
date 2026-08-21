@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use soroban_sdk::{
     contract, contractimpl, token::TokenClient, Address, Bytes, Env, String, Symbol, Vec,
 };
@@ -361,7 +363,7 @@ impl GovernanceContract {
             panic!("{}", GovernanceError::LockAmountZero as u32);
         }
 
-        if lock_duration < MIN_LOCK_DURATION || lock_duration > MAX_LOCK_DURATION {
+        if !(MIN_LOCK_DURATION..=MAX_LOCK_DURATION).contains(&lock_duration) {
             panic!("{}", GovernanceError::InvalidLockDuration as u32);
         }
 
