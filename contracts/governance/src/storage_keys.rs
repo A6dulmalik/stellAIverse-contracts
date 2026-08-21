@@ -1,31 +1,32 @@
-use soroban_sdk::{Env, Symbol, String, Address};
+use soroban_sdk::{contracttype, Address};
 
-// Core storage keys
-pub const ADMIN: &str = "admin";
-pub const VOTING_TOKEN: &str = "voting_token";
-pub const PROPOSAL_COUNT: &str = "prop_count";
-pub const VOTING_DELAY: &str = "voting_delay";
-pub const VOTING_PERIOD: &str = "voting_period";
-pub const TIMELOCK_DELAY: &str = "timelock_delay";
-pub const QUORUM: &str = "quorum";
-pub const APPROVAL_THRESHOLD: &str = "threshold";
-pub const PROPOSAL_BASE: &str = "prop_";
-pub const VOTE_BASE: &str = "vote_";
-pub const DELEGATION_BASE: &str = "del_";
+/// Storage key enum for all contract state
+#[derive(Clone)]
+#[contracttype]
+pub enum DataKey {
+    // Configuration
+    Admin,
+    VotingToken,
+    ProposalCount,
+    VotingDelay,
+    VotingPeriod,
+    TimelockDelay,
+    Quorum,
+    ApprovalThreshold,
+    ProposalThreshold,
+    TotalSupply,
 
-// Get proposal storage key
-pub fn get_proposal_key(env: &Env, proposal_id: u64) -> Symbol {
-    Symbol::new(env, &format!("{}{}", PROPOSAL_BASE, proposal_id))
-}
+    // Proposal data
+    Proposal(u64),
 
-// Get vote storage key for a specific voter and proposal
-pub fn get_vote_key(env: &Env, proposal_id: u64, voter: &Address) -> Symbol {
-    let voter_str = voter.to_string();
-    Symbol::new(env, &format!("{}{}_{}", VOTE_BASE, proposal_id, voter_str))
-}
+    // Vote tracking: (proposal_id, voter)
+    Vote(u64, Address),
 
-// Get delegation storage key for a delegator
-pub fn get_delegation_key(env: &Env, delegator: &Address) -> Symbol {
-    let delegator_str = delegator.to_string();
-    Symbol::new(env, &format!("{}{}", DELEGATION_BASE, delegator_str))
+    // Delegation: delegator -> Delegation record
+    Delegation(Address),
+    // Delegated power: delegatee -> total delegated i128
+    DelegatedPower(Address),
+
+    // veToken lock: account
+    VeLock(Address),
 }
