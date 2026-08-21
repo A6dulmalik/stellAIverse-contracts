@@ -21,25 +21,40 @@ pub enum MockTokenKey {
 #[contractimpl]
 impl MockToken {
     pub fn mint(env: Env, to: Address, amount: i128) {
-        if amount <= 0 { panic!("Mint amount must be positive"); }
+        if amount <= 0 {
+            panic!("Mint amount must be positive");
+        }
         let key = MockTokenKey::Balance(to);
         let current: i128 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(current.checked_add(amount).unwrap()));
+        env.storage()
+            .instance()
+            .set(&key, &(current.checked_add(amount).unwrap()));
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
-        env.storage().instance().get(&MockTokenKey::Balance(id)).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&MockTokenKey::Balance(id))
+            .unwrap_or(0)
     }
 
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
-        if amount <= 0 { panic!("Transfer amount must be positive"); }
+        if amount <= 0 {
+            panic!("Transfer amount must be positive");
+        }
         let from_key = MockTokenKey::Balance(from.clone());
         let from_balance: i128 = env.storage().instance().get(&from_key).unwrap_or(0);
-        if from_balance < amount { panic!("Insufficient balance"); }
-        env.storage().instance().set(&from_key, &(from_balance - amount));
+        if from_balance < amount {
+            panic!("Insufficient balance");
+        }
+        env.storage()
+            .instance()
+            .set(&from_key, &(from_balance - amount));
         let to_key = MockTokenKey::Balance(to);
         let to_balance: i128 = env.storage().instance().get(&to_key).unwrap_or(0);
-        env.storage().instance().set(&to_key, &(to_balance.checked_add(amount).unwrap()));
+        env.storage()
+            .instance()
+            .set(&to_key, &(to_balance.checked_add(amount).unwrap()));
     }
 }
 
@@ -59,11 +74,16 @@ pub enum MockStrategyKey {
 #[contractimpl]
 impl MockStrategy {
     pub fn get_balance(env: Env) -> i128 {
-        env.storage().instance().get(&MockStrategyKey::Balance).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&MockStrategyKey::Balance)
+            .unwrap_or(0)
     }
 
     pub fn set_balance(env: Env, amount: i128) {
-        env.storage().instance().set(&MockStrategyKey::Balance, &amount);
+        env.storage()
+            .instance()
+            .set(&MockStrategyKey::Balance, &amount);
     }
 }
 
@@ -84,7 +104,13 @@ fn setup() -> (Env, VaultClient<'static>, MockTokenClient<'static>, Address) {
     (env, vault, token, admin)
 }
 
-fn setup_with_deposit() -> (Env, VaultClient<'static>, MockTokenClient<'static>, Address, Address) {
+fn setup_with_deposit() -> (
+    Env,
+    VaultClient<'static>,
+    MockTokenClient<'static>,
+    Address,
+    Address,
+) {
     let (env, vault, token, admin) = setup();
     let user = Address::generate(&env);
     token.mint(&user, &100_000);
@@ -92,7 +118,12 @@ fn setup_with_deposit() -> (Env, VaultClient<'static>, MockTokenClient<'static>,
     (env, vault, token, admin, user)
 }
 
-fn add_strategy(env: &Env, vault: &VaultClient<'_>, admin: &Address, name: &str) -> (Symbol, MockStrategyClient<'static>) {
+fn add_strategy(
+    env: &Env,
+    vault: &VaultClient<'_>,
+    admin: &Address,
+    name: &str,
+) -> (Symbol, MockStrategyClient<'static>) {
     let id = Symbol::new(env, name);
     let addr = env.register(MockStrategy, ());
     vault.add_strategy(admin, &id, &addr);
@@ -106,7 +137,7 @@ fn add_strategy(env: &Env, vault: &VaultClient<'_>, admin: &Address, name: &str)
 
 #[test]
 fn initialize_sets_admin_and_token() {
-    let (env, vault, token, admin) = setup();
+    let (_env, vault, token, admin) = setup();
     assert_eq!(vault.get_admin(), admin);
     assert_eq!(vault.get_token(), token.address);
     assert_eq!(vault.get_total_assets(), 0);
@@ -194,7 +225,7 @@ fn deposit_rejected_when_paused() {
 
 #[test]
 fn full_withdrawal_returns_all_deposited_tokens() {
-    let (env, vault, token, _admin, user) = setup_with_deposit();
+    let (_env, vault, token, _admin, user) = setup_with_deposit();
     let withdrawn = vault.withdraw(&user, &10_000);
     assert_eq!(withdrawn, 10_000);
     assert_eq!(token.balance(&user), 100_000); // user started with 100k, deposited 10k, withdrew 10k
@@ -204,7 +235,7 @@ fn full_withdrawal_returns_all_deposited_tokens() {
 
 #[test]
 fn partial_withdrawal_returns_proportional_assets() {
-    let (env, vault, token, _admin, user) = setup_with_deposit();
+    let (_env, vault, token, _admin, user) = setup_with_deposit();
     let withdrawn = vault.withdraw(&user, &5_000);
     assert_eq!(withdrawn, 5_000);
     assert_eq!(token.balance(&user), 95_000); // 100k - 10k deposited + 5k withdrawn
@@ -280,7 +311,7 @@ fn deposit_after_yield_gives_fewer_shares() {
     vault.deposit(&alice, &10_000);
 
     // Simulate 50% gain via harvest (strategy reports 15k, was 10k)
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000); // 100% allocation
     vault.harvest_strategy(&sid, &15_000);
 
@@ -300,7 +331,7 @@ fn withdraw_after_yield_gives_more_tokens() {
     token.mint(&user, &10_000);
     vault.deposit(&user, &10_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
     vault.harvest_strategy(&sid, &15_000);
 
@@ -335,7 +366,7 @@ fn harvest_collects_performance_fee_on_gains() {
     token.mint(&user, &10_000);
     vault.deposit(&user, &10_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
 
     // Strategy gains 5k
@@ -357,7 +388,7 @@ fn no_fee_on_flat_or_loss() {
     token.mint(&user, &10_000);
     vault.deposit(&user, &10_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
 
     let r = vault.harvest_strategy(&sid, &10_000); // flat
@@ -374,7 +405,7 @@ fn fee_only_on_new_gains_above_hwm() {
     token.mint(&user, &10_000);
     vault.deposit(&user, &10_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
 
     // First harvest: +5k
@@ -397,7 +428,7 @@ fn harvest_tracks_losses_correctly() {
     token.mint(&user, &100_000);
     vault.deposit(&user, &100_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
 
     let r = vault.harvest_strategy(&sid, &90_000); // 10k loss
@@ -416,7 +447,7 @@ fn strategy_loss_and_recovery() {
     token.mint(&user, &100_000);
     vault.deposit(&user, &100_000);
 
-    let (sid, strat) = add_strategy(&env, &vault, &admin, "s1");
+    let (sid, _strat) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
 
     // Phase 1: +20% gain
@@ -826,7 +857,7 @@ fn queue_withdrawal_locks_shares() {
 
 #[test]
 fn process_withdrawal_queue_pays_user() {
-    let (env, vault, token, _admin, user) = setup_with_deposit();
+    let (_env, vault, _token, _admin, user) = setup_with_deposit();
     let request_id = vault.queue_withdrawal(&user, &5_000);
     let assets = vault.process_withdrawal_queue(&request_id);
     assert_eq!(assets, 5_000);
@@ -873,7 +904,7 @@ fn preview_deposit_matches_deposit() {
 
 #[test]
 fn preview_withdraw_matches_withdraw() {
-    let (_env, vault, _token, _admin, user) = setup_with_deposit();
+    let (_env, vault, _token, _admin, _user) = setup_with_deposit();
     let preview = vault.preview_withdraw(&5_000);
     assert_eq!(preview, 5_000);
 }
@@ -984,7 +1015,7 @@ fn scenario_new_depositor_not_diluted() {
     let (sid, _) = add_strategy(&env, &vault, &admin, "s1");
     vault.set_strategy_allocation(&admin, &sid, &10_000);
     vault.harvest_strategy(&sid, &110_000); // +10% gain
-    // total = 108_000, hwm = 108_000
+                                            // total = 108_000, hwm = 108_000
 
     let bob_shares = vault.deposit(&bob, &100_000);
     // bob_shares = 100_000 * 100_000 / 108_000 = 92_592
