@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod tests {
+    use crate::contract::GovernanceContractClient;
+    use crate::{GovernanceContract, ProposalAction, ProposalState, VoteType};
+    use crate::{MAX_LOCK_DURATION, MIN_LOCK_DURATION};
     use soroban_sdk::{
         contract, contractimpl, contracttype,
         testutils::{Address as _, Ledger as _},
         Address, Bytes, Env, String, Vec,
     };
-    use crate::{GovernanceContract, VoteType, ProposalState, ProposalAction};
-    use crate::contract::GovernanceContractClient;
-    use crate::{MIN_LOCK_DURATION, MAX_LOCK_DURATION};
 
     // ── Mock Token Contract ──────────────────────────────────────────────
 
@@ -30,11 +30,7 @@ mod tests {
                 .instance()
                 .set(&key, &(current.checked_add(amount).unwrap()));
             let supply_key = MockTokenKey::Supply;
-            let supply: i128 = env
-                .storage()
-                .instance()
-                .get(&supply_key)
-                .unwrap_or(0);
+            let supply: i128 = env.storage().instance().get(&supply_key).unwrap_or(0);
             env.storage()
                 .instance()
                 .set(&supply_key, &(supply.checked_add(amount).unwrap()));
@@ -93,10 +89,24 @@ mod tests {
         gov.initialize(
             &admin, &token_id, &1, &100, &86400, &2000, &5100, &100, &1_000_000,
         );
-        TestContext { env, gov, token, admin, token_id }
+        TestContext {
+            env,
+            gov,
+            token,
+            admin,
+            token_id,
+        }
     }
 
-    fn empty_args(ctx: &TestContext) -> (String, Vec<Address>, Vec<String>, Vec<Bytes>, Vec<ProposalAction>) {
+    fn empty_args(
+        ctx: &TestContext,
+    ) -> (
+        String,
+        Vec<Address>,
+        Vec<String>,
+        Vec<Bytes>,
+        Vec<ProposalAction>,
+    ) {
         (
             String::from_str(&ctx.env, "Test proposal"),
             Vec::new(&ctx.env),
@@ -124,7 +134,17 @@ mod tests {
     #[should_panic(expected = "1")]
     fn cannot_double_initialize() {
         let ctx = setup();
-        ctx.gov.initialize(&ctx.admin, &ctx.token_id, &1, &100, &86400, &2000, &5100, &100, &1_000_000);
+        ctx.gov.initialize(
+            &ctx.admin,
+            &ctx.token_id,
+            &1,
+            &100,
+            &86400,
+            &2000,
+            &5100,
+            &100,
+            &1_000_000,
+        );
     }
 
     #[test]
@@ -170,8 +190,9 @@ mod tests {
         let ctx = setup();
         let proposer = Address::generate(&ctx.env);
         ctx.token.mint(&proposer, &10_000);
-        for _ in 0..3 {        let (d, t, f, c, a) = empty_args(&ctx);
-        ctx.gov.propose(&proposer, &d, &t, &f, &c, &a);
+        for _ in 0..3 {
+            let (d, t, f, c, a) = empty_args(&ctx);
+            ctx.gov.propose(&proposer, &d, &t, &f, &c, &a);
         }
         assert_eq!(ctx.gov.get_proposal_ids().len(), 3);
     }
@@ -480,7 +501,8 @@ mod tests {
         let ctx = setup();
         let delegator = Address::generate(&ctx.env);
         let delegatee = Address::generate(&ctx.env);
-        ctx.token.mint(&delegator, &5_000);        ctx.gov.delegate(&delegator, &delegatee, &5_000);
+        ctx.token.mint(&delegator, &5_000);
+        ctx.gov.delegate(&delegator, &delegatee, &5_000);
         assert!(ctx.gov.get_delegation_info(&delegator).is_some());
 
         ctx.gov.revoke_delegation(&delegator);
@@ -537,7 +559,8 @@ mod tests {
         let ctx = setup();
         let user = Address::generate(&ctx.env);
         ctx.token.mint(&user, &1_000);
-        ctx.gov.lock_tokens(&user, &1_000, &(5 * 365 * 24 * 60 * 60));
+        ctx.gov
+            .lock_tokens(&user, &1_000, &(5 * 365 * 24 * 60 * 60));
     }
 
     #[test]
@@ -606,7 +629,14 @@ mod tests {
     #[test]
     fn update_parameters() {
         let ctx = setup();
-        ctx.gov.set_voting_params(&ctx.admin, &None, &Some(200u64), &None, &Some(2500i128), &None);
+        ctx.gov.set_voting_params(
+            &ctx.admin,
+            &None,
+            &Some(200u64),
+            &None,
+            &Some(2500i128),
+            &None,
+        );
         let s = ctx.gov.get_settings();
         assert_eq!(s.voting_delay, 1);
         assert_eq!(s.voting_period, 200);
@@ -619,7 +649,8 @@ mod tests {
     fn unauthorized_param_update_fails() {
         let ctx = setup();
         let rando = Address::generate(&ctx.env);
-        ctx.gov.set_voting_params(&rando, &None, &None, &None, &None, &Some(9900i128));
+        ctx.gov
+            .set_voting_params(&rando, &None, &None, &None, &None, &Some(9900i128));
     }
 
     // ── Action Execution Tests ───────────────────────────────────────────
@@ -647,7 +678,9 @@ mod tests {
         let targets = Vec::new(&ctx.env);
         let functions = Vec::new(&ctx.env);
         let calldatas = Vec::new(&ctx.env);
-        let pid = ctx.gov.propose(&voter, &desc, &targets, &functions, &calldatas, &actions);
+        let pid = ctx
+            .gov
+            .propose(&voter, &desc, &targets, &functions, &calldatas, &actions);
 
         // Vote to pass
         ctx.env.ledger().set_sequence_number(2);

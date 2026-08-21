@@ -53,9 +53,7 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::ProposalThreshold, &proposal_threshold);
-        env.storage()
-            .instance()
-            .set(&DataKey::ProposalCount, &0u64);
+        env.storage().instance().set(&DataKey::ProposalCount, &0u64);
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &total_supply);
@@ -91,15 +89,13 @@ impl GovernanceContract {
             panic!("{}", GovernanceError::InsufficientVotingPower as u32);
         }
 
-        if !actions.is_empty() && (targets.len() != functions.len() || targets.len() != calldatas.len()) {
+        if !actions.is_empty()
+            && (targets.len() != functions.len() || targets.len() != calldatas.len())
+        {
             panic!("{}", GovernanceError::InvalidInput as u32);
         }
 
-        let voting_delay: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::VotingDelay)
-            .unwrap();
+        let voting_delay: u64 = env.storage().instance().get(&DataKey::VotingDelay).unwrap();
         let voting_period: u64 = env
             .storage()
             .instance()
@@ -319,11 +315,7 @@ impl GovernanceContract {
 
         // Track total delegated power for the delegatee
         let delegated_key = DataKey::DelegatedPower(delegatee.clone());
-        let current_delegated: i128 = env
-            .storage()
-            .instance()
-            .get(&delegated_key)
-            .unwrap_or(0);
+        let current_delegated: i128 = env.storage().instance().get(&delegated_key).unwrap_or(0);
         env.storage()
             .instance()
             .set(&delegated_key, &safe_add(current_delegated, amount));
@@ -349,11 +341,7 @@ impl GovernanceContract {
 
         // Decrease delegated power for the delegatee
         let delegated_key = DataKey::DelegatedPower(delegation.delegatee);
-        let current_delegated: i128 = env
-            .storage()
-            .instance()
-            .get(&delegated_key)
-            .unwrap_or(0);
+        let current_delegated: i128 = env.storage().instance().get(&delegated_key).unwrap_or(0);
         let new_delegated = current_delegated - delegation.amount;
         env.storage().instance().set(&delegated_key, &new_delegated);
 
@@ -486,10 +474,7 @@ impl GovernanceContract {
     }
 
     /// Get proposal vote results and state
-    pub fn get_proposal_results(
-        env: Env,
-        proposal_id: u64,
-    ) -> (i128, i128, i128, ProposalState) {
+    pub fn get_proposal_results(env: Env, proposal_id: u64) -> (i128, i128, i128, ProposalState) {
         let proposal = Self::get_proposal_from_storage(&env, proposal_id);
         let state = Self::state(&env, &proposal);
         (
@@ -542,16 +527,8 @@ impl GovernanceContract {
     pub fn get_settings(env: Env) -> GovernanceSettings {
         GovernanceSettings {
             admin: env.storage().instance().get(&DataKey::Admin).unwrap(),
-            voting_token: env
-                .storage()
-                .instance()
-                .get(&DataKey::VotingToken)
-                .unwrap(),
-            voting_delay: env
-                .storage()
-                .instance()
-                .get(&DataKey::VotingDelay)
-                .unwrap(),
+            voting_token: env.storage().instance().get(&DataKey::VotingToken).unwrap(),
+            voting_delay: env.storage().instance().get(&DataKey::VotingDelay).unwrap(),
             voting_period: env
                 .storage()
                 .instance()
@@ -616,8 +593,7 @@ impl GovernanceContract {
 
     /// Check if quorum is reached
     fn quorum_reached(env: &Env, proposal: &Proposal) -> bool {
-        let total_votes =
-            proposal.for_votes + proposal.against_votes + proposal.abstain_votes;
+        let total_votes = proposal.for_votes + proposal.against_votes + proposal.abstain_votes;
         let total_supply: i128 = env
             .storage()
             .instance()
@@ -690,11 +666,7 @@ impl GovernanceContract {
 
     /// Get token balance of an address via the voting token contract
     fn get_token_balance(env: &Env, account: &Address) -> i128 {
-        let voting_token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::VotingToken)
-            .unwrap();
+        let voting_token: Address = env.storage().instance().get(&DataKey::VotingToken).unwrap();
         let token_client = TokenClient::new(env, &voting_token);
         token_client.balance(account)
     }

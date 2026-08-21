@@ -3,10 +3,10 @@
 pub mod contract;
 pub mod errors;
 pub mod storage_keys;
-pub mod types;
-pub mod utils;
 #[cfg(test)]
 mod test;
+pub mod types;
+pub mod utils;
 
 pub use contract::GovernanceContract;
 pub use errors::GovernanceError;
