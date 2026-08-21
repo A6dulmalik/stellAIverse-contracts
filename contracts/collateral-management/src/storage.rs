@@ -1,8 +1,6 @@
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
-use crate::types::{
-    CollateralTypeConfig, DataKey, Loan, ProtocolParams, UserCollateral,
-};
+use crate::types::{CollateralTypeConfig, DataKey, Loan, ProtocolParams, UserCollateral};
 
 /* ──────────────────── INIT ──────────────────── */
 
@@ -16,6 +14,7 @@ pub fn set_initialized(env: &Env) {
 
 /* ──────────────────── ADMIN ──────────────────── */
 
+#[allow(dead_code)]
 pub fn get_admin(env: &Env) -> Address {
     env.storage()
         .instance()
@@ -23,6 +22,7 @@ pub fn get_admin(env: &Env) -> Address {
         .expect("admin not set")
 }
 
+#[allow(dead_code)]
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
@@ -42,6 +42,7 @@ pub fn set_oracle(env: &Env, oracle: &Address) {
 
 /* ──────────────────── TREASURY ──────────────────── */
 
+#[allow(dead_code)]
 pub fn get_treasury(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Treasury)
 }
@@ -73,7 +74,9 @@ pub fn is_reentrancy_locked(env: &Env) -> bool {
 }
 
 pub fn set_reentrancy_lock(env: &Env, locked: bool) {
-    env.storage().instance().set(&DataKey::ReentrancyLock, &locked);
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyLock, &locked);
 }
 
 /* ──────────────────── LOAN COUNTER ──────────────────── */
@@ -86,7 +89,9 @@ pub fn get_loan_counter(env: &Env) -> u64 {
 }
 
 pub fn set_loan_counter(env: &Env, counter: u64) {
-    env.storage().instance().set(&DataKey::LoanCounter, &counter);
+    env.storage()
+        .instance()
+        .set(&DataKey::LoanCounter, &counter);
 }
 
 /* ──────────────────── COLLATERAL TYPES ──────────────────── */
@@ -111,7 +116,9 @@ pub fn get_collateral_tokens(env: &Env) -> Vec<Address> {
 }
 
 pub fn set_collateral_tokens(env: &Env, tokens: &Vec<Address>) {
-    env.storage().instance().set(&DataKey::CollateralTokens, tokens);
+    env.storage()
+        .instance()
+        .set(&DataKey::CollateralTokens, tokens);
 }
 
 pub fn add_collateral_token(env: &Env, token: &Address) {
@@ -144,9 +151,7 @@ pub fn set_user_collateral(env: &Env, collateral: &UserCollateral) {
 /* ──────────────────── LOANS ──────────────────── */
 
 pub fn get_loan(env: &Env, loan_id: u64) -> Option<Loan> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Loan(loan_id))
+    env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 
 pub fn set_loan(env: &Env, loan: &Loan) {
@@ -193,7 +198,9 @@ pub fn get_protocol_params(env: &Env) -> ProtocolParams {
 }
 
 pub fn set_protocol_params(env: &Env, params: &ProtocolParams) {
-    env.storage().instance().set(&DataKey::ProtocolParams, params);
+    env.storage()
+        .instance()
+        .set(&DataKey::ProtocolParams, params);
 }
 
 /* ──────────────────── TOTAL DEBT ──────────────────── */
@@ -233,6 +240,7 @@ pub fn get_lending_pool_deposits(env: &Env, token: &Address) -> i128 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 pub fn set_lending_pool_deposits(env: &Env, token: &Address, amount: i128) {
     env.storage()
         .persistent()

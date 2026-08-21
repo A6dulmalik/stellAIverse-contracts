@@ -28,10 +28,7 @@ pub fn calculate_utilization(total_borrowed: i128, total_deposits: i128) -> u32 
 /// Above optimal utilization: rate = base + slope1 + (slope2 * (util - optimal) / (10000 - optimal)).
 ///
 /// Returns the annual interest rate in basis points.
-pub fn calculate_interest_rate(
-    params: &ProtocolParams,
-    utilization_bps: u32,
-) -> u32 {
+pub fn calculate_interest_rate(params: &ProtocolParams, utilization_bps: u32) -> u32 {
     let base = params.base_interest_rate_bps as i128;
     let slope1 = params.interest_slope1_bps as i128;
     let slope2 = params.interest_slope2_bps as i128;
@@ -109,6 +106,7 @@ pub fn calculate_health_factor(
 }
 
 /// Calculate the maximum borrow amount a user can take given their collateral.
+#[allow(dead_code)]
 pub fn calculate_max_borrow(collateral_value: i128, ltv_bps: u32) -> i128 {
     let ltv = ltv_bps as i128;
     (collateral_value * ltv) / BPS_DENOMINATOR
@@ -138,6 +136,7 @@ pub fn calculate_liquidation_seizure(
 
 /// Calculate the weighted liquidation threshold across multiple collateral types.
 /// Returns the effective threshold in basis points.
+#[allow(dead_code)]
 pub fn calculate_weighted_liquidation_threshold(
     collateral_values: &[(i128, u32)],
     total_collateral_value: i128,

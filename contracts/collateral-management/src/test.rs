@@ -94,10 +94,10 @@ fn set_price_and_register(ctx: &TestContext) {
         &ctx.admin,
         &ctx.collateral_token,
         &feed_id,
-        &8000,  // ltv_bps
-        &8500,  // liq_threshold_bps
-        &500,   // liq_bonus_bps
-        &0,     // no cap
+        &8000,      // ltv_bps
+        &8500,      // liq_threshold_bps
+        &500,       // liq_bonus_bps
+        &0,         // no cap
         &1_000_000, // price_scale
     );
 }
@@ -209,11 +209,13 @@ fn test_deactivate_reactivate_collateral_type() {
     let ctx = setup_env();
     set_price_and_register(&ctx);
 
-    ctx.cm.deactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
+    ctx.cm
+        .deactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
     let config = ctx.cm.get_collateral_type(&ctx.collateral_token);
     assert!(!config.is_active);
 
-    ctx.cm.reactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
+    ctx.cm
+        .reactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
     let config = ctx.cm.get_collateral_type(&ctx.collateral_token);
     assert!(config.is_active);
 }
@@ -227,7 +229,8 @@ fn test_deposit_collateral() {
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
 
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
 
     let user_coll = ctx.cm.get_user_collateral(&ctx.user, &ctx.collateral_token);
     assert_eq!(user_coll.amount, 5_000);
@@ -261,8 +264,10 @@ fn test_deposit_multiple_collateral_types() {
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
     mint_tokens(&ctx.env, &collateral_token_2, &ctx.user, 5_000);
 
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &3_000);
-    ctx.cm.deposit_collateral(&ctx.user, &collateral_token_2, &2_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &3_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &collateral_token_2, &2_000);
 
     let coll_1 = ctx.cm.get_user_collateral(&ctx.user, &ctx.collateral_token);
     let coll_2 = ctx.cm.get_user_collateral(&ctx.user, &collateral_token_2);
@@ -276,7 +281,8 @@ fn test_deposit_zero_amount() {
     let ctx = setup_env();
     set_price_and_register(&ctx);
 
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &0);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &0);
 }
 
 #[test]
@@ -284,10 +290,12 @@ fn test_deposit_zero_amount() {
 fn test_deposit_inactive_collateral() {
     let ctx = setup_env();
     set_price_and_register(&ctx);
-    ctx.cm.deactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
+    ctx.cm
+        .deactivate_collateral_type(&ctx.admin, &ctx.collateral_token);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
 }
 
 #[test]
@@ -309,8 +317,10 @@ fn test_deposit_collateral_cap() {
     );
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &500);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &600); // exceeds cap
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &500);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &600); // exceeds cap
 }
 
 // ─── Borrow Tests ──────────────────────────────────────────────────
@@ -322,7 +332,8 @@ fn test_borrow_basic() {
 
     // Deposit 1000 collateral at price 2 => value = 2000
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     // LTV 80% => max borrow = 1600
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
@@ -346,7 +357,8 @@ fn test_borrow_exceeds_ltv() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     // Value = 2000, LTV 80% => max 1600
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
@@ -370,7 +382,8 @@ fn test_repay_full_loan() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &500);
@@ -390,7 +403,8 @@ fn test_repay_partial() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &1000);
@@ -411,7 +425,8 @@ fn test_repay_exceeds_debt() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &500);
@@ -427,7 +442,8 @@ fn test_repay_already_repaid() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &500);
@@ -445,9 +461,11 @@ fn test_withdraw_collateral() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
 
-    ctx.cm.withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
+    ctx.cm
+        .withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
 
     let user_coll = ctx.cm.get_user_collateral(&ctx.user, &ctx.collateral_token);
     assert_eq!(user_coll.amount, 3_000);
@@ -463,9 +481,11 @@ fn test_withdraw_too_much() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1_000);
 
-    ctx.cm.withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
+    ctx.cm
+        .withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
 }
 
 #[test]
@@ -476,14 +496,16 @@ fn test_withdraw_undercollateralizes() {
 
     // Deposit 1000 at price 2 => value = 2000
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     // Borrow 1500 (under 80% LTV of 1600)
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &1500);
 
     // Withdrawing 400 would leave 600 collateral (value 1200), debt 1500 => unhealthy
-    ctx.cm.withdraw_collateral(&ctx.user, &ctx.collateral_token, &400);
+    ctx.cm
+        .withdraw_collateral(&ctx.user, &ctx.collateral_token, &400);
 }
 
 // ─── Liquidation Tests ─────────────────────────────────────────────
@@ -498,7 +520,8 @@ fn test_liquidation() {
 
     // Deposit 1000 collateral at price 2 => value = 2000
     mint_tokens(&ctx.env, &ctx.collateral_token, &borrower, 10_000);
-    ctx.cm.deposit_collateral(&borrower, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&borrower, &ctx.collateral_token, &1000);
 
     // Borrow 1500 (healthy with LTV 80%: max 1600)
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
@@ -506,7 +529,8 @@ fn test_liquidation() {
 
     // Drop price to make position unhealthy:
     // Old price 2 => new price 1. value = 1000, debt = 1500. HF < 1
-    ctx.cm.set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
+    ctx.cm
+        .set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
 
     // Verify position is now liquidatable
     let hf = ctx.cm.get_health_factor(&borrower);
@@ -534,7 +558,8 @@ fn test_liquidation_not_undercollateralized() {
     let liquidator = Address::generate(&ctx.env);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &borrower, 10_000);
-    ctx.cm.deposit_collateral(&borrower, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&borrower, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&borrower, &ctx.borrow_token, &500);
@@ -554,7 +579,8 @@ fn test_liquidation_already_repaid() {
     let liquidator = Address::generate(&ctx.env);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &borrower, 10_000);
-    ctx.cm.deposit_collateral(&borrower, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&borrower, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&borrower, &ctx.borrow_token, &500);
@@ -576,7 +602,8 @@ fn test_health_factor_no_debt() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     let hf = ctx.cm.get_health_factor(&ctx.user);
     assert!(hf.is_healthy);
@@ -588,7 +615,8 @@ fn test_health_factor_healthy() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &500);
@@ -606,13 +634,15 @@ fn test_health_factor_unhealthy_after_price_drop() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &1500);
 
     // Drop price: value goes from 2000 to 1000, debt 1500
-    ctx.cm.set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
+    ctx.cm
+        .set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
 
     let hf = ctx.cm.get_health_factor(&ctx.user);
     assert!(!hf.is_healthy);
@@ -639,7 +669,8 @@ fn test_can_liquidate() {
     let borrower = Address::generate(&ctx.env);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &borrower, 10_000);
-    ctx.cm.deposit_collateral(&borrower, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&borrower, &ctx.collateral_token, &1000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&borrower, &ctx.borrow_token, &1500);
@@ -648,7 +679,8 @@ fn test_can_liquidate() {
     assert!(!ctx.cm.can_liquidate(&borrower, &0));
 
     // Drop price
-    ctx.cm.set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
+    ctx.cm
+        .set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
     assert!(ctx.cm.can_liquidate(&borrower, &0));
 }
 
@@ -659,14 +691,17 @@ fn test_pause_unpause() {
     let ctx = setup_env();
     ctx.cm.pause(&ctx.admin);
 
-    let result = ctx.cm.try_deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    let result = ctx
+        .cm
+        .try_deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
     assert!(result.is_err()); // should fail
 
     ctx.cm.unpause(&ctx.admin);
     // After unpausing, deposit should work (but collateral type needs to exist)
     set_price_and_register(&ctx);
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 }
 
 #[test]
@@ -717,7 +752,8 @@ fn test_debt_ceiling_enforced() {
     ctx.cm.set_protocol_parameters(&ctx.admin, &params);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &600);
@@ -731,7 +767,8 @@ fn test_interest_accrual() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&ctx.user, &ctx.borrow_token, &1000);
@@ -757,7 +794,8 @@ fn test_get_user_loan_ids() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
 
@@ -782,7 +820,8 @@ fn test_get_total_protocol_debt() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &10_000);
 
     assert_eq!(ctx.cm.get_total_protocol_debt(&ctx.borrow_token), 0);
 
@@ -800,7 +839,8 @@ fn test_multiple_loans() {
     set_price_and_register(&ctx);
 
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &5_000);
 
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
 
@@ -838,7 +878,8 @@ fn test_set_price() {
     // Price should be used for collateral valuation
     set_price_and_register(&ctx);
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &1000);
 
     let hf = ctx.cm.get_health_factor(&ctx.user);
     assert!(hf.is_healthy);
@@ -853,8 +894,14 @@ fn test_full_lifecycle_deposit_borrow_repay_withdraw() {
 
     // 1. Deposit collateral
     mint_tokens(&ctx.env, &ctx.collateral_token, &ctx.user, 10_000);
-    ctx.cm.deposit_collateral(&ctx.user, &ctx.collateral_token, &2_000);
-    assert_eq!(ctx.cm.get_user_collateral(&ctx.user, &ctx.collateral_token).amount, 2_000);
+    ctx.cm
+        .deposit_collateral(&ctx.user, &ctx.collateral_token, &2_000);
+    assert_eq!(
+        ctx.cm
+            .get_user_collateral(&ctx.user, &ctx.collateral_token)
+            .amount,
+        2_000
+    );
 
     // 2. Borrow
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
@@ -871,8 +918,14 @@ fn test_full_lifecycle_deposit_borrow_repay_withdraw() {
     assert!(ctx.cm.get_user_loan(&ctx.user, &0).is_repaid);
 
     // 5. Withdraw collateral
-    ctx.cm.withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
-    assert_eq!(ctx.cm.get_user_collateral(&ctx.user, &ctx.collateral_token).amount, 0);
+    ctx.cm
+        .withdraw_collateral(&ctx.user, &ctx.collateral_token, &2_000);
+    assert_eq!(
+        ctx.cm
+            .get_user_collateral(&ctx.user, &ctx.collateral_token)
+            .amount,
+        0
+    );
 
     let balance = MockTokenClient::new(&ctx.env, &ctx.collateral_token).balance(&ctx.user);
     assert_eq!(balance, 10_000);
@@ -890,21 +943,24 @@ fn test_liquidation_lifecycle() {
 
     // 1. Borrower deposits 1000 collateral (value = 2000)
     mint_tokens(&ctx.env, &ctx.collateral_token, &borrower, 10_000);
-    ctx.cm.deposit_collateral(&borrower, &ctx.collateral_token, &1000);
+    ctx.cm
+        .deposit_collateral(&borrower, &ctx.collateral_token, &1000);
 
     // 2. Borrower borrows 1500 (under 80% LTV)
     mint_tokens(&ctx.env, &ctx.borrow_token, &ctx.cm_id, 10_000);
     ctx.cm.borrow(&borrower, &ctx.borrow_token, &1500);
 
     // 3. Price drops, making position unhealthy
-    ctx.cm.set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
+    ctx.cm
+        .set_price(&ctx.admin, &Symbol::new(&ctx.env, "COLL_PRICE"), &1_000_000);
 
     let hf = ctx.cm.get_health_factor(&borrower);
     assert!(!hf.is_healthy);
     assert!(ctx.cm.can_liquidate(&borrower, &0));
 
     // 4. Liquidator covers 750 debt
-    let liq_token_before = MockTokenClient::new(&ctx.env, &ctx.collateral_token).balance(&liquidator);
+    let liq_token_before =
+        MockTokenClient::new(&ctx.env, &ctx.collateral_token).balance(&liquidator);
     mint_tokens(&ctx.env, &ctx.borrow_token, &liquidator, 10_000);
 
     ctx.cm.liquidate(&liquidator, &borrower, &0, &750);
@@ -913,7 +969,8 @@ fn test_liquidation_lifecycle() {
     let loan = ctx.cm.get_user_loan(&borrower, &0);
     assert_eq!(loan.total_debt, 750);
 
-    let liq_token_after = MockTokenClient::new(&ctx.env, &ctx.collateral_token).balance(&liquidator);
+    let liq_token_after =
+        MockTokenClient::new(&ctx.env, &ctx.collateral_token).balance(&liquidator);
     assert!(liq_token_after > liq_token_before); // Received collateral
 
     let borrower_coll = ctx.cm.get_user_collateral(&borrower, &ctx.collateral_token);

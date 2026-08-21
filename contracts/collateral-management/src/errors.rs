@@ -13,6 +13,7 @@ pub fn already_initialized() -> ! {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub fn not_initialized() -> ! {
     err!("Contract not initialized")
 }
@@ -128,16 +129,19 @@ pub fn invalid_liquidation_params() -> ! {
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub fn borrow_token_not_accepted() -> ! {
     err!("Borrow token not accepted")
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub fn zero_debt_position() -> ! {
     err!("Zero debt position")
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 pub fn no_deposits() -> ! {
     err!("No deposits found")
 }

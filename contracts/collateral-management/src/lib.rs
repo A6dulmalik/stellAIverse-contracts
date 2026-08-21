@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 mod errors;
 mod math;
@@ -43,7 +44,9 @@ impl CollateralManagement {
         admin.require_auth();
 
         // Store admin under the RBAC-compatible key (same as stellai_lib ADMIN_KEY)
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &admin);
         set_oracle(&env, &oracle);
         if let Some(t) = treasury {
             set_treasury(&env, &t);
@@ -163,8 +166,7 @@ impl CollateralManagement {
         };
         config.is_active = false;
         set_collateral_config(&env, &config);
-        env.events()
-            .publish((symbol_short!("col_off"),), (token,));
+        env.events().publish((symbol_short!("col_off"),), (token,));
     }
 
     pub fn reactivate_collateral_type(env: Env, admin: Address, token: Address) {
@@ -176,8 +178,7 @@ impl CollateralManagement {
         };
         config.is_active = true;
         set_collateral_config(&env, &config);
-        env.events()
-            .publish((symbol_short!("col_on"),), (token,));
+        env.events().publish((symbol_short!("col_on"),), (token,));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -431,8 +432,7 @@ impl CollateralManagement {
         let total_debt = Self::user_total_debt(env, user);
 
         if total_debt > 0 {
-            let total_value =
-                Self::total_collateral_value_override(env, user, token, remaining);
+            let total_value = Self::total_collateral_value_override(env, user, token, remaining);
             let wt = Self::weighted_threshold_override(env, user, token, remaining);
             let hf = calculate_health_factor(total_value, total_debt, wt);
             let threshold = get_protocol_params(env).liq_health_threshold_bps as i128;
@@ -457,7 +457,12 @@ impl CollateralManagement {
 
         env.events().publish(
             (symbol_short!("col_wd"),),
-            (user.clone(), token.clone(), amount, env.ledger().timestamp()),
+            (
+                user.clone(),
+                token.clone(),
+                amount,
+                env.ledger().timestamp(),
+            ),
         );
     }
 
@@ -658,14 +663,12 @@ impl CollateralManagement {
         };
 
         // Get oracle price
-        let oracle_price = Self::get_oracle_price(env, &coll_config.oracle_feed, coll_config.price_scale);
+        let oracle_price =
+            Self::get_oracle_price(env, &coll_config.oracle_feed, coll_config.price_scale);
 
         // Calculate seizure amount
-        let (coll_seized, bonus) = calculate_liquidation_seizure(
-            actual_covered,
-            oracle_price,
-            coll_config.liq_bonus_bps,
-        );
+        let (coll_seized, bonus) =
+            calculate_liquidation_seizure(actual_covered, oracle_price, coll_config.liq_bonus_bps);
 
         // Check borrower has enough collateral
         let user_coll = get_user_collateral(env, borrower, &coll_token);
@@ -675,7 +678,11 @@ impl CollateralManagement {
 
         // Transfer repayment from liquidator
         let contract_addr = env.current_contract_address();
-        TokenClient::new(env, &loan.borrow_token).transfer(liquidator, &contract_addr, &actual_covered);
+        TokenClient::new(env, &loan.borrow_token).transfer(
+            liquidator,
+            &contract_addr,
+            &actual_covered,
+        );
 
         // Transfer seized collateral to liquidator
         TokenClient::new(env, &coll_token).transfer(&contract_addr, liquidator, &coll_seized);
@@ -792,7 +799,8 @@ impl CollateralManagement {
         let mut total = 0i128;
         for i in 0..ids.len() {
             let loan = get_loan(env, ids.get(i).unwrap()).unwrap_or_else(|| loan_not_found());
-            if !loan.is_liquidated && !loan.is_repaid
+            if !loan.is_liquidated
+                && !loan.is_repaid
                 && loan.borrower == *user
                 && loan.borrow_token == *token
             {
@@ -948,11 +956,7 @@ impl CollateralManagement {
         let oracle_addr = get_oracle(env);
         let mut args = Vec::<Val>::new(env);
         args.push_back(feed_id.clone().into_val(env));
-        let result: i128 = env.invoke_contract(
-            &oracle_addr,
-            &symbol_short!("get_price"),
-            args,
-        );
+        let result: i128 = env.invoke_contract(&oracle_addr, &symbol_short!("get_price"), args);
         if result <= 0 {
             oracle_price_unavailable();
         }
