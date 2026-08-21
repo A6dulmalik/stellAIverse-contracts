@@ -1,21 +1,20 @@
-use soroban_sdk::{contracttype, Address, String, Vec, Map};
-use crate::governance::VoteType;
+use soroban_sdk::{contracttype, Address, Bytes, String, Vec};
 
-// Proposal States
+/// Proposal states
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[contracttype]
 pub enum ProposalState {
-    Pending = 0,    // Waiting for voting delay to pass
-    Active = 1,     // Voting is active
-    Canceled = 2,   // Proposal was canceled
-    Defeated = 3,   // Proposal failed to pass
-    Succeeded = 4,  // Proposal passed but not queued
-    Queued = 5,     // Queued for timelock execution
-    Expired = 6,    // Timelock expired, not executed
-    Executed = 7,   // Successfully executed
+    Pending = 0,
+    Active = 1,
+    Canceled = 2,
+    Defeated = 3,
+    Succeeded = 4,
+    Queued = 5,
+    Expired = 6,
+    Executed = 7,
 }
 
-// Vote types
+/// Vote types
 #[derive(Clone, Copy, PartialEq, Debug)]
 #[contracttype]
 pub enum VoteType {
@@ -24,19 +23,7 @@ pub enum VoteType {
     Abstain = 2,
 }
 
-// Timelocked operation
-#[derive(Clone, Debug, PartialEq)]
-#[contracttype]
-pub struct TimelockedCall {
-    pub target: Address,
-    pub value: i128,
-    pub function: String,
-    pub data: Vec<u8>,
-    pub eta: u64,
-    pub executed: bool,
-}
-
-// Proposal structure
+/// Proposal structure
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct Proposal {
@@ -44,21 +31,21 @@ pub struct Proposal {
     pub proposer: Address,
     pub description: String,
     pub targets: Vec<Address>,
-    pub values: Vec<i128>,
     pub functions: Vec<String>,
-    pub calldatas: Vec<Vec<u8>>,
+    pub calldatas: Vec<Bytes>,
     pub vote_start: u64,
     pub vote_end: u64,
     pub eta: u64,
     pub for_votes: i128,
     pub against_votes: i128,
     pub abstain_votes: i128,
+    pub actions: Vec<ProposalAction>,
     pub canceled: bool,
     pub executed: bool,
     pub created_at: u64,
 }
 
-// Proposal vote tracker
+/// Proposal vote tracker
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct ProposalVote {
@@ -67,7 +54,7 @@ pub struct ProposalVote {
     pub weight: i128,
 }
 
-// Delegation information
+/// Delegation information
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct Delegation {
@@ -77,14 +64,35 @@ pub struct Delegation {
     pub timestamp: u64,
 }
 
-// Governance settings
+/// veToken lock information
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct VeTokenLock {
+    pub account: Address,
+    pub amount: i128,
+    pub lock_end: u64,
+    pub created_at: u64,
+}
+
+/// Typed governance action that proposals can execute
+/// Variants use tuple syntax (Soroban contracttype requirement)
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub enum ProposalAction {
+    // (token, to, amount)
+    Transfer(Address, Address, i128),
+}
+
+/// Governance settings
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct GovernanceSettings {
-    pub voting_delay: u64,      // Blocks before voting starts
-    pub voting_period: u64,     // Blocks voting lasts
-    pub timelock_delay: u64,    // Seconds to wait before execution
-    pub quorum: i128,           // Minimum percentage of supply needed (in basis points)
-    pub approval_threshold: i128,// Percentage of votes needed to pass (basis points)
-    pub proposal_threshold: i128,// Minimum tokens required to create a proposal
+    pub admin: Address,
+    pub voting_token: Address,
+    pub voting_delay: u64,
+    pub voting_period: u64,
+    pub timelock_delay: u64,
+    pub quorum: i128,
+    pub approval_threshold: i128,
+    pub proposal_threshold: i128,
 }
