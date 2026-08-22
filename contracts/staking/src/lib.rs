@@ -28,8 +28,8 @@ pub enum DataKey {
     Paused,
     RewardRatePerSecond,
     LastRewardTime,
-    RewardPerTokenStored,
-    TotalWeightedStake,
+    RewardPerTokenStored, // Global accumulator scaled by 1e18
+    TotalWeightedStake,   // Sum of (amount * multiplier_bps / BPS_DENOMINATOR)
     TotalStaked,
     TotalRewardsDistributed,
     StakeCounter,
@@ -50,7 +50,7 @@ pub struct StakePosition {
     pub tier_id: u32,
     pub stake_time: u64,
     pub lock_end_time: u64,
-    pub reward_per_token_paid: i128,
+    pub reward_per_token_paid: i128, // Snapshot of global accumulator
     pub active: bool,
 }
 
@@ -61,8 +61,8 @@ pub struct StakingTier {
     pub name: Symbol,
     pub min_stake_amount: i128,
     pub lock_duration_seconds: u64,
-    pub reward_multiplier_bps: u32,
-    pub penalty_bps: u32,
+    pub reward_multiplier_bps: u32, // e.g., 10000 = 1x, 15000 = 1.5x
+    pub penalty_bps: u32,           // Early withdrawal penalty in bps
     pub active: bool,
     pub created_at: u64,
 }
@@ -108,6 +108,8 @@ pub struct Staking;
 
 #[contractimpl]
 impl Staking {
+    // ── INITIALIZATION ─────────────────────────────────────────
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -128,7 +130,9 @@ impl Staking {
         env.storage()
             .instance()
             .set(&DataKey::RewardToken, &reward_token);
-        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::Paused, &false);
         env.storage()
             .instance()
             .set(&DataKey::RewardRatePerSecond, &reward_rate_per_second);
@@ -360,6 +364,7 @@ impl Staking {
             panic!("Amount below tier minimum");
         }
 
+        // Update reward accumulator before modifying state
         Self::update_pool(&env);
 
         let now = env.ledger().timestamp();
@@ -387,6 +392,7 @@ impl Staking {
 
         Self::add_user_stake(&env, &user, stake_id);
 
+        // Update total staked
         let new_total = Self::total_staked(&env)
             .checked_add(amount)
             .expect("Total staked overflow");
@@ -394,6 +400,7 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalStaked, &new_total);
 
+        // Update total weighted stake
         let user_weight = Self::calculate_weight(amount, tier.reward_multiplier_bps);
         let new_weighted = Self::total_weighted_stake(&env)
             .checked_add(user_weight)
@@ -402,6 +409,7 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalWeightedStake, &new_weighted);
 
+        // Transfer tokens from user to contract
         let token = Self::reward_token(&env);
         let contract_address = env.current_contract_address();
         Self::transfer_token(&env, &token, &user, &contract_address, amount);
@@ -433,14 +441,17 @@ impl Staking {
         let tier = Self::load_tier(&env, position.tier_id);
         let now = env.ledger().timestamp();
 
+        // Calculate pending rewards before updating pool
         let pending_rewards = Self::calculate_pending_rewards_static(
             &env,
             &position,
             tier.reward_multiplier_bps,
         );
 
+        // Update pool (before removing weight)
         Self::update_pool(&env);
 
+        // Check if early withdrawal
         let (penalty_amount, principal_returned) = if now < position.lock_end_time {
             let penalty = Self::calculate_penalty(position.amount, tier.penalty_bps);
             let net_principal = position
@@ -456,11 +467,13 @@ impl Staking {
             .checked_add(pending_rewards)
             .expect("Total returned overflow");
 
+        // Deactivate position
         position.active = false;
         env.storage()
             .instance()
             .set(&DataKey::StakePosition(stake_id), &position);
 
+        // Update total staked
         let new_total = Self::total_staked(&env)
             .checked_sub(position.amount)
             .expect("Total staked underflow");
@@ -468,6 +481,7 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalStaked, &new_total);
 
+        // Update total weighted stake (remove this position's weight)
         let user_weight = Self::calculate_weight(position.amount, tier.reward_multiplier_bps);
         let new_weighted = Self::total_weighted_stake(&env)
             .checked_sub(user_weight)
@@ -476,6 +490,7 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalWeightedStake, &new_weighted);
 
+        // Update total rewards distributed
         if pending_rewards > 0 {
             let new_total_rewards = Self::total_rewards_distributed(&env)
                 .checked_add(pending_rewards)
@@ -485,22 +500,37 @@ impl Staking {
                 .set(&DataKey::TotalRewardsDistributed, &new_total_rewards);
         }
 
+        // Transfer tokens back to user
         let token = Self::reward_token(&env);
         let contract_address = env.current_contract_address();
         Self::enter_non_reentrant(&env);
 
         if principal_returned > 0 {
-            Self::transfer_token_unchecked(&env, &token, &contract_address, &user, principal_returned);
+            Self::transfer_token_unchecked(
+                &env,
+                &token,
+                &contract_address,
+                &user,
+                principal_returned,
+            );
         }
         if pending_rewards > 0 {
-            Self::transfer_token_unchecked(&env, &token, &contract_address, &user, pending_rewards);
+            Self::transfer_token_unchecked(
+                &env,
+                &token,
+                &contract_address,
+                &user,
+                pending_rewards,
+            );
         }
 
         Self::exit_non_reentrant(&env);
 
         env.events().publish(
             (symbol_short!("stk_unst"),),
-            (stake_id, user, principal_returned, pending_rewards, penalty_amount),
+            (
+                stake_id, user, principal_returned, pending_rewards, penalty_amount,
+            ),
         );
 
         UnstakeResult {
@@ -510,6 +540,307 @@ impl Staking {
             penalty_amount,
             total_returned,
         }
+    }
+
+    pub fn claim_rewards(env: Env, user: Address, stake_id: u64) -> i128 {
+        user.require_auth();
+
+        let mut position = Self::load_stake(&env, stake_id);
+        if position.user != user {
+            panic!("Only staker can claim");
+        }
+        if !position.active {
+            panic!("Stake is not active");
+        }
+
+        let tier = Self::load_tier(&env, position.tier_id);
+
+        // Calculate pending rewards before updating pool
+        let pending_rewards = Self::calculate_pending_rewards_static(
+            &env,
+            &position,
+            tier.reward_multiplier_bps,
+        );
+
+        if pending_rewards <= 0 {
+            panic!("No rewards to claim");
+        }
+
+        // Update pool
+        Self::update_pool(&env);
+
+        // Update position's reward_per_token_paid to current global value
+        position.reward_per_token_paid = Self::reward_per_token_stored(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::StakePosition(stake_id), &position);
+
+        // Update total rewards distributed
+        let new_total_rewards = Self::total_rewards_distributed(&env)
+            .checked_add(pending_rewards)
+            .expect("Total rewards overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRewardsDistributed, &new_total_rewards);
+
+        // Transfer rewards
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::enter_non_reentrant(&env);
+        Self::transfer_token_unchecked(
+            &env,
+            &token,
+            &contract_address,
+            &user,
+            pending_rewards,
+        );
+        Self::exit_non_reentrant(&env);
+
+        env.events().publish(
+            (symbol_short!("stk_claim"),),
+            (stake_id, user, pending_rewards),
+        );
+
+        pending_rewards
+    }
+
+    pub fn claim_rewards_batch(env: Env, user: Address, stake_ids: Vec<u64>) -> i128 {
+        user.require_auth();
+        if stake_ids.is_empty() {
+            panic!("No stakes provided");
+        }
+        if stake_ids.len() > MAX_BATCH_SIZE {
+            panic!("Batch exceeds maximum size");
+        }
+
+        let mut total_claimed: i128 = 0;
+
+        // First pass: calculate all pending rewards before updating pool
+        let mut pending_list = Vec::<i128>::new(&env);
+        for idx in 0..stake_ids.len() {
+            let stake_id = stake_ids.get_unchecked(idx);
+            let position = Self::load_stake(&env, stake_id);
+            if position.user != user {
+                panic!("Only staker can claim");
+            }
+            if !position.active {
+                panic!("Stake is not active");
+            }
+
+            let tier = Self::load_tier(&env, position.tier_id);
+            let pending = Self::calculate_pending_rewards_static(
+                &env,
+                &position,
+                tier.reward_multiplier_bps,
+            );
+            pending_list.push_back(pending);
+        }
+
+        // Update pool once
+        Self::update_pool(&env);
+        let current_rpt = Self::reward_per_token_stored(&env);
+
+        // Second pass: update positions and accumulate claimed
+        for idx in 0..stake_ids.len() {
+            let stake_id = stake_ids.get_unchecked(idx);
+            let pending = pending_list.get_unchecked(idx);
+
+            if pending > 0 {
+                let mut position = Self::load_stake(&env, stake_id);
+                position.reward_per_token_paid = current_rpt;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::StakePosition(stake_id), &position);
+
+                total_claimed = total_claimed
+                    .checked_add(pending)
+                    .expect("Total claimed overflow");
+            }
+        }
+
+        if total_claimed <= 0 {
+            panic!("No rewards to claim");
+        }
+
+        // Update total rewards distributed
+        let new_total_rewards = Self::total_rewards_distributed(&env)
+            .checked_add(total_claimed)
+            .expect("Total rewards overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalRewardsDistributed, &new_total_rewards);
+
+        // Transfer rewards
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::enter_non_reentrant(&env);
+        Self::transfer_token_unchecked(
+            &env,
+            &token,
+            &contract_address,
+            &user,
+            total_claimed,
+        );
+        Self::exit_non_reentrant(&env);
+
+        env.events().publish(
+            (symbol_short!("stk_bclm"),),
+            (user, total_claimed, stake_ids.len()),
+        );
+
+        total_claimed
+    }
+
+    // ── EMERGENCY WITHDRAWAL ───────────────────────────────────
+
+    pub fn emergency_withdraw(
+        env: Env,
+        admin: Address,
+        user: Address,
+        stake_id: u64,
+    ) -> UnstakeResult {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let mut position = Self::load_stake(&env, stake_id);
+        if position.user != user {
+            panic!("Stake does not belong to user");
+        }
+        if !position.active {
+            panic!("Stake is not active");
+        }
+
+        let tier = Self::load_tier(&env, position.tier_id);
+
+        // Emergency withdrawal returns principal only, forfeiting rewards
+        let principal_returned = position.amount;
+
+        // Deactivate position
+        position.active = false;
+        env.storage()
+            .instance()
+            .set(&DataKey::StakePosition(stake_id), &position);
+
+        // Update total staked
+        let new_total = Self::total_staked(&env)
+            .checked_sub(position.amount)
+            .expect("Total staked underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalStaked, &new_total);
+
+        // Update total weighted stake
+        let user_weight = Self::calculate_weight(position.amount, tier.reward_multiplier_bps);
+        let new_weighted = Self::total_weighted_stake(&env)
+            .checked_sub(user_weight)
+            .expect("Total weighted underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalWeightedStake, &new_weighted);
+
+        // Transfer principal back
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::enter_non_reentrant(&env);
+        Self::transfer_token_unchecked(
+            &env,
+            &token,
+            &contract_address,
+            &user,
+            principal_returned,
+        );
+        Self::exit_non_reentrant(&env);
+
+        env.events().publish(
+            (symbol_short!("stk_emw"),),
+            (stake_id, user, principal_returned),
+        );
+
+        UnstakeResult {
+            stake_id,
+            principal_returned,
+            rewards_claimed: 0,
+            penalty_amount: 0,
+            total_returned: principal_returned,
+        }
+    }
+
+    pub fn emergency_withdraw_all(env: Env, admin: Address, user: Address) -> i128 {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let stake_ids = Self::user_stake_ids(&env, &user);
+        let mut total_returned: i128 = 0;
+
+        for idx in 0..stake_ids.len() {
+            let stake_id = stake_ids.get_unchecked(idx);
+            let mut position = Self::load_stake(&env, stake_id);
+            if position.user != user || !position.active {
+                continue;
+            }
+
+            let tier = Self::load_tier(&env, position.tier_id);
+            let principal = position.amount;
+            position.active = false;
+            env.storage()
+                .instance()
+                .set(&DataKey::StakePosition(stake_id), &position);
+
+            let new_total = Self::total_staked(&env)
+                .checked_sub(principal)
+                .expect("Total staked underflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalStaked, &new_total);
+
+            let user_weight = Self::calculate_weight(principal, tier.reward_multiplier_bps);
+            let new_weighted = Self::total_weighted_stake(&env)
+                .checked_sub(user_weight)
+                .expect("Total weighted underflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalWeightedStake, &new_weighted);
+
+            total_returned = total_returned
+                .checked_add(principal)
+                .expect("Total returned overflow");
+        }
+
+        if total_returned > 0 {
+            let token = Self::reward_token(&env);
+            let contract_address = env.current_contract_address();
+            Self::enter_non_reentrant(&env);
+            Self::transfer_token_unchecked(
+                &env,
+                &token,
+                &contract_address,
+                &user,
+                total_returned,
+            );
+            Self::exit_non_reentrant(&env);
+        }
+
+        env.events()
+            .publish((symbol_short!("stk_emwa"),), (user, total_returned));
+
+        total_returned
+    }
+
+    // ── FUND REWARDS ───────────────────────────────────────────
+
+    /// Fund the staking contract with reward tokens
+    pub fn fund_rewards(env: Env, funder: Address, amount: i128) {
+        funder.require_auth();
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::transfer_token(&env, &token, &funder, &contract_address, amount);
+
+        env.events()
+            .publish((symbol_short!("stk_fund"),), (funder, amount));
     }
 
     // ── VIEW FUNCTIONS ─────────────────────────────────────────
@@ -542,14 +873,6 @@ impl Staking {
         Self::last_reward_time(&env)
     }
 
-    pub fn get_tier(env: Env, tier_id: u32) -> StakingTier {
-        Self::load_tier(&env, tier_id)
-    }
-
-    pub fn get_tier_ids(env: Env) -> Vec<u32> {
-        Self::tier_ids(&env)
-    }
-
     pub fn get_stake(env: Env, stake_id: u64) -> StakePosition {
         Self::load_stake(&env, stake_id)
     }
@@ -573,12 +896,70 @@ impl Staking {
         Self::calculate_pending_rewards_static(&env, &position, tier.reward_multiplier_bps)
     }
 
+    pub fn get_tier(env: Env, tier_id: u32) -> StakingTier {
+        Self::load_tier(&env, tier_id)
+    }
+
+    pub fn get_tier_ids(env: Env) -> Vec<u32> {
+        Self::tier_ids(&env)
+    }
+
     pub fn get_stake_counter(env: Env) -> u64 {
         Self::stake_counter(&env)
     }
 
+    pub fn get_staking_info(env: Env) -> StakingInfo {
+        StakingInfo {
+            admin: Self::admin(&env),
+            reward_token: Self::reward_token(&env),
+            total_staked: Self::total_staked(&env),
+            total_rewards_distributed: Self::total_rewards_distributed(&env),
+            reward_rate_per_second: Self::reward_rate_per_second(&env),
+            last_reward_time: Self::last_reward_time(&env),
+            paused: Self::paused(&env),
+            tier_count: Self::tier_ids(&env).len(),
+        }
+    }
+
+    pub fn calculate_apy(env: Env, tier_id: u32) -> i128 {
+        let tier = Self::load_tier(&env, tier_id);
+        let total_staked = Self::total_staked(&env);
+        let reward_rate = Self::reward_rate_per_second(&env);
+
+        if total_staked <= 0 || reward_rate <= 0 {
+            return 0;
+        }
+
+        let seconds_per_year: i128 = 31_557_600; // 365.25 days
+        let annual_rewards = reward_rate
+            .checked_mul(seconds_per_year)
+            .expect("Annual rewards overflow");
+
+        let adjusted_rewards = annual_rewards
+            .checked_mul(tier.reward_multiplier_bps as i128)
+            .expect("Adjusted rewards overflow");
+
+        adjusted_rewards
+            .checked_mul(PRECISION_FACTOR)
+            .expect("APY overflow")
+            / total_staked
+            / BPS_DENOMINATOR
+    }
+
     // ── INTERNAL HELPERS ───────────────────────────────────────
 
+    /// Calculate the weighted stake amount for a position
+    fn calculate_weight(amount: i128, multiplier_bps: u32) -> i128 {
+        // weight = amount * multiplier_bps / BPS_DENOMINATOR
+        // We keep this in base units (not scaled by PRECISION_FACTOR)
+        // The reward_per_token accumulator is scaled by PRECISION_FACTOR
+        amount
+            .checked_mul(multiplier_bps as i128)
+            .expect("Weight overflow")
+            / BPS_DENOMINATOR
+    }
+
+    /// Update the global reward_per_token accumulator
     fn update_pool(env: &Env) {
         let last_reward_time = Self::last_reward_time(env);
         let now = env.ledger().timestamp();
@@ -590,6 +971,7 @@ impl Staking {
         let current_rpt = Self::reward_per_token_stored(env);
 
         if total_weighted <= 0 {
+            // No stakers, just advance time
             env.storage()
                 .instance()
                 .set(&DataKey::LastRewardTime, &now);
@@ -601,6 +983,7 @@ impl Staking {
             .checked_sub(last_reward_time)
             .expect("Time elapsed underflow");
 
+        // reward_per_token_increment = reward_rate * elapsed * PRECISION_FACTOR / total_weighted
         let increment = reward_rate
             .checked_mul(elapsed as i128)
             .expect("Reward increment overflow")
@@ -620,13 +1003,7 @@ impl Staking {
             .set(&DataKey::LastRewardTime, &now);
     }
 
-    fn calculate_weight(amount: i128, multiplier_bps: u32) -> i128 {
-        amount
-            .checked_mul(multiplier_bps as i128)
-            .expect("Weight overflow")
-            / BPS_DENOMINATOR
-    }
-
+    /// Calculate pending rewards for a position (read-only, does not modify state)
     fn calculate_pending_rewards_static(
         env: &Env,
         position: &StakePosition,
@@ -641,6 +1018,7 @@ impl Staking {
             return 0;
         }
 
+        // Calculate what reward_per_token would be if pool were updated now
         let last_reward_time = Self::last_reward_time(env);
         let now = env.ledger().timestamp();
         let current_rpt = Self::reward_per_token_stored(env);
@@ -661,6 +1039,7 @@ impl Staking {
             current_rpt
         };
 
+        // pending = (future_rpt - user_rpt_paid) * user_weight / PRECISION_FACTOR
         let user_weight = Self::calculate_weight(position.amount, multiplier_bps);
 
         let rpt_diff = future_rpt
