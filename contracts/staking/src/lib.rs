@@ -341,6 +341,177 @@ impl Staking {
             .publish((symbol_short!("stk_tdis"),), (tier_id, admin));
     }
 
+    // ── STAKING ────────────────────────────────────────────────
+
+    pub fn stake(env: Env, user: Address, amount: i128, tier_id: u32) -> StakeResult {
+        user.require_auth();
+        if Self::paused(&env) {
+            panic!("Staking is paused");
+        }
+        if amount <= 0 {
+            panic!("Stake amount must be positive");
+        }
+
+        let tier = Self::load_tier(&env, tier_id);
+        if !tier.active {
+            panic!("Tier is not active");
+        }
+        if amount < tier.min_stake_amount {
+            panic!("Amount below tier minimum");
+        }
+
+        Self::update_pool(&env);
+
+        let now = env.ledger().timestamp();
+        let lock_end_time = now
+            .checked_add(tier.lock_duration_seconds)
+            .expect("Lock end time overflow");
+
+        let current_rpt = Self::reward_per_token_stored(&env);
+
+        let stake_id = Self::next_stake_id(&env);
+        let position = StakePosition {
+            stake_id,
+            user: user.clone(),
+            amount,
+            tier_id,
+            stake_time: now,
+            lock_end_time,
+            reward_per_token_paid: current_rpt,
+            active: true,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StakePosition(stake_id), &position);
+
+        Self::add_user_stake(&env, &user, stake_id);
+
+        let new_total = Self::total_staked(&env)
+            .checked_add(amount)
+            .expect("Total staked overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalStaked, &new_total);
+
+        let user_weight = Self::calculate_weight(amount, tier.reward_multiplier_bps);
+        let new_weighted = Self::total_weighted_stake(&env)
+            .checked_add(user_weight)
+            .expect("Total weighted overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalWeightedStake, &new_weighted);
+
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::transfer_token(&env, &token, &user, &contract_address, amount);
+
+        env.events().publish(
+            (symbol_short!("stk_new"),),
+            (stake_id, user, amount, tier_id, lock_end_time),
+        );
+
+        StakeResult {
+            stake_id,
+            amount,
+            tier_id,
+            lock_end_time,
+        }
+    }
+
+    pub fn unstake(env: Env, user: Address, stake_id: u64) -> UnstakeResult {
+        user.require_auth();
+
+        let mut position = Self::load_stake(&env, stake_id);
+        if position.user != user {
+            panic!("Only staker can unstake");
+        }
+        if !position.active {
+            panic!("Stake is not active");
+        }
+
+        let tier = Self::load_tier(&env, position.tier_id);
+        let now = env.ledger().timestamp();
+
+        let pending_rewards = Self::calculate_pending_rewards_static(
+            &env,
+            &position,
+            tier.reward_multiplier_bps,
+        );
+
+        Self::update_pool(&env);
+
+        let (penalty_amount, principal_returned) = if now < position.lock_end_time {
+            let penalty = Self::calculate_penalty(position.amount, tier.penalty_bps);
+            let net_principal = position
+                .amount
+                .checked_sub(penalty)
+                .expect("Penalty exceeds principal");
+            (penalty, net_principal)
+        } else {
+            (0, position.amount)
+        };
+
+        let total_returned = principal_returned
+            .checked_add(pending_rewards)
+            .expect("Total returned overflow");
+
+        position.active = false;
+        env.storage()
+            .instance()
+            .set(&DataKey::StakePosition(stake_id), &position);
+
+        let new_total = Self::total_staked(&env)
+            .checked_sub(position.amount)
+            .expect("Total staked underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalStaked, &new_total);
+
+        let user_weight = Self::calculate_weight(position.amount, tier.reward_multiplier_bps);
+        let new_weighted = Self::total_weighted_stake(&env)
+            .checked_sub(user_weight)
+            .expect("Total weighted underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalWeightedStake, &new_weighted);
+
+        if pending_rewards > 0 {
+            let new_total_rewards = Self::total_rewards_distributed(&env)
+                .checked_add(pending_rewards)
+                .expect("Total rewards overflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalRewardsDistributed, &new_total_rewards);
+        }
+
+        let token = Self::reward_token(&env);
+        let contract_address = env.current_contract_address();
+        Self::enter_non_reentrant(&env);
+
+        if principal_returned > 0 {
+            Self::transfer_token_unchecked(&env, &token, &contract_address, &user, principal_returned);
+        }
+        if pending_rewards > 0 {
+            Self::transfer_token_unchecked(&env, &token, &contract_address, &user, pending_rewards);
+        }
+
+        Self::exit_non_reentrant(&env);
+
+        env.events().publish(
+            (symbol_short!("stk_unst"),),
+            (stake_id, user, principal_returned, pending_rewards, penalty_amount),
+        );
+
+        UnstakeResult {
+            stake_id,
+            principal_returned,
+            rewards_claimed: pending_rewards,
+            penalty_amount,
+            total_returned,
+        }
+    }
+
     // ── VIEW FUNCTIONS ─────────────────────────────────────────
 
     pub fn get_admin(env: Env) -> Address {
@@ -377,6 +548,33 @@ impl Staking {
 
     pub fn get_tier_ids(env: Env) -> Vec<u32> {
         Self::tier_ids(&env)
+    }
+
+    pub fn get_stake(env: Env, stake_id: u64) -> StakePosition {
+        Self::load_stake(&env, stake_id)
+    }
+
+    pub fn get_user_stakes(env: Env, user: Address) -> Vec<StakePosition> {
+        let stake_ids = Self::user_stake_ids(&env, &user);
+        let mut stakes = Vec::new(&env);
+        for idx in 0..stake_ids.len() {
+            let stake_id = stake_ids.get_unchecked(idx);
+            stakes.push_back(Self::load_stake(&env, stake_id));
+        }
+        stakes
+    }
+
+    pub fn get_pending_rewards(env: Env, stake_id: u64) -> i128 {
+        let position = Self::load_stake(&env, stake_id);
+        if !position.active {
+            return 0;
+        }
+        let tier = Self::load_tier(&env, position.tier_id);
+        Self::calculate_pending_rewards_static(&env, &position, tier.reward_multiplier_bps)
+    }
+
+    pub fn get_stake_counter(env: Env) -> u64 {
+        Self::stake_counter(&env)
     }
 
     // ── INTERNAL HELPERS ───────────────────────────────────────
@@ -427,6 +625,52 @@ impl Staking {
             .checked_mul(multiplier_bps as i128)
             .expect("Weight overflow")
             / BPS_DENOMINATOR
+    }
+
+    fn calculate_pending_rewards_static(
+        env: &Env,
+        position: &StakePosition,
+        multiplier_bps: u32,
+    ) -> i128 {
+        if !position.active {
+            return 0;
+        }
+
+        let total_weighted = Self::total_weighted_stake(env);
+        if total_weighted <= 0 {
+            return 0;
+        }
+
+        let last_reward_time = Self::last_reward_time(env);
+        let now = env.ledger().timestamp();
+        let current_rpt = Self::reward_per_token_stored(env);
+
+        let future_rpt = if now > last_reward_time {
+            let reward_rate = Self::reward_rate_per_second(env);
+            let elapsed = now - last_reward_time;
+            let increment = reward_rate
+                .checked_mul(elapsed as i128)
+                .expect("Reward increment overflow")
+                .checked_mul(PRECISION_FACTOR)
+                .expect("Reward increment precision overflow")
+                / total_weighted;
+            current_rpt
+                .checked_add(increment)
+                .expect("Reward per token overflow")
+        } else {
+            current_rpt
+        };
+
+        let user_weight = Self::calculate_weight(position.amount, multiplier_bps);
+
+        let rpt_diff = future_rpt
+            .checked_sub(position.reward_per_token_paid)
+            .expect("RPT diff underflow");
+
+        rpt_diff
+            .checked_mul(user_weight)
+            .expect("Pending rewards overflow")
+            / PRECISION_FACTOR
     }
 
     fn calculate_penalty(amount: i128, penalty_bps: u32) -> i128 {
