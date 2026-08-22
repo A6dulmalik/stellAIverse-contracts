@@ -204,6 +204,143 @@ impl Staking {
             .publish((symbol_short!("stk_rate"),), (admin, new_rate));
     }
 
+    // ── TIER MANAGEMENT ────────────────────────────────────────
+
+    pub fn add_tier(
+        env: Env,
+        admin: Address,
+        name: Symbol,
+        min_stake_amount: i128,
+        lock_duration_seconds: u64,
+        reward_multiplier_bps: u32,
+        penalty_bps: u32,
+    ) -> u32 {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        if min_stake_amount <= 0 {
+            panic!("Minimum stake amount must be positive");
+        }
+        if lock_duration_seconds == 0 {
+            panic!("Lock duration must be positive");
+        }
+        if reward_multiplier_bps == 0 {
+            panic!("Reward multiplier must be positive");
+        }
+        if penalty_bps > MAX_PENALTY_BPS {
+            panic!("Penalty exceeds 100%");
+        }
+
+        let tier_ids = Self::tier_ids(&env);
+        if tier_ids.len() >= MAX_TIERS {
+            panic!("Maximum tiers reached");
+        }
+
+        let tier_id = Self::next_tier_id(&env);
+        let tier = StakingTier {
+            tier_id,
+            name: name.clone(),
+            min_stake_amount,
+            lock_duration_seconds,
+            reward_multiplier_bps,
+            penalty_bps,
+            active: true,
+            created_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Tier(tier_id), &tier);
+
+        let mut ids = tier_ids;
+        ids.push_back(tier_id);
+        env.storage().instance().set(&DataKey::TierIds, &ids);
+
+        env.events().publish(
+            (symbol_short!("stk_tier"),),
+            (
+                tier_id, name, min_stake_amount, lock_duration_seconds,
+                reward_multiplier_bps, penalty_bps,
+            ),
+        );
+
+        tier_id
+    }
+
+    pub fn update_tier(
+        env: Env,
+        admin: Address,
+        tier_id: u32,
+        new_name: Option<Symbol>,
+        new_min_stake_amount: Option<i128>,
+        new_lock_duration_seconds: Option<u64>,
+        new_reward_multiplier_bps: Option<u32>,
+        new_penalty_bps: Option<u32>,
+    ) -> StakingTier {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let mut tier = Self::load_tier(&env, tier_id);
+        if !tier.active {
+            panic!("Tier is not active");
+        }
+
+        if let Some(name) = new_name {
+            tier.name = name;
+        }
+        if let Some(amount) = new_min_stake_amount {
+            if amount <= 0 {
+                panic!("Minimum stake amount must be positive");
+            }
+            tier.min_stake_amount = amount;
+        }
+        if let Some(duration) = new_lock_duration_seconds {
+            if duration == 0 {
+                panic!("Lock duration must be positive");
+            }
+            tier.lock_duration_seconds = duration;
+        }
+        if let Some(multiplier) = new_reward_multiplier_bps {
+            if multiplier == 0 {
+                panic!("Reward multiplier must be positive");
+            }
+            tier.reward_multiplier_bps = multiplier;
+        }
+        if let Some(penalty) = new_penalty_bps {
+            if penalty > MAX_PENALTY_BPS {
+                panic!("Penalty exceeds 100%");
+            }
+            tier.penalty_bps = penalty;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Tier(tier_id), &tier);
+
+        env.events()
+            .publish((symbol_short!("stk_tupd"),), (tier_id, admin));
+
+        tier
+    }
+
+    pub fn deactivate_tier(env: Env, admin: Address, tier_id: u32) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let mut tier = Self::load_tier(&env, tier_id);
+        if !tier.active {
+            panic!("Tier already inactive");
+        }
+
+        tier.active = false;
+        env.storage()
+            .instance()
+            .set(&DataKey::Tier(tier_id), &tier);
+
+        env.events()
+            .publish((symbol_short!("stk_tdis"),), (tier_id, admin));
+    }
+
     // ── VIEW FUNCTIONS ─────────────────────────────────────────
 
     pub fn get_admin(env: Env) -> Address {
@@ -232,6 +369,14 @@ impl Staking {
 
     pub fn get_last_reward_time(env: Env) -> u64 {
         Self::last_reward_time(&env)
+    }
+
+    pub fn get_tier(env: Env, tier_id: u32) -> StakingTier {
+        Self::load_tier(&env, tier_id)
+    }
+
+    pub fn get_tier_ids(env: Env) -> Vec<u32> {
+        Self::tier_ids(&env)
     }
 
     // ── INTERNAL HELPERS ───────────────────────────────────────
