@@ -1,22 +1,18 @@
 [workspace]
 members = [
-    "contracts/access-control",
     "contracts/amm",
-    "contracts/amm-protocol",
     "contracts/collateral-management",
     "contracts/compliance-integration",
     "contracts/cross-chain-bridge",
-    "contracts/derivatives-swaps",
+    "contracts/access-control",
     "contracts/execution-hub",
     "contracts/fee-distribution",
     "contracts/governance",
-    "contracts/lending-protocol",
-    "contracts/marketplace",
     "contracts/membership-subscription",
+    "contracts/marketplace",
     "contracts/multisig-wallet",
     "contracts/token-vesting",
     "contracts/vault",
-    "contracts/yield-aggregator",
     "lib",
     "shared",
 ]
@@ -50,6 +46,8 @@ opt-level = 1
 lto = false
 debug = true
 incremental = true
+
+
 
 [workspace.dependencies]
 soroban-sdk = { version = "=22.0.10", default-features = false }
