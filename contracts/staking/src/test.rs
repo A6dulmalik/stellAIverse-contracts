@@ -315,6 +315,8 @@ fn stake_tokens_successfully() {
     let (env, staking, token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
+    let contract_balance_before = token.balance(&staking.address);
+
     let result = staking.stake(&user, &5000, &tier_id);
 
     assert_eq!(result.stake_id, 1);
@@ -432,6 +434,86 @@ fn unstake_after_lock_period() {
 
     // Stake at time 1000
     env.ledger().set_timestamp(1000);
+    let result = staking.stake(&user, &5000, &tier_id);
+
+    // Lock end = 1000 + 86400 (1 day) = 87400
+    assert_eq!(result.lock_end_time, 87400);
+
+    let position = staking.get_stake(&1);
+    assert_eq!(position.stake_time, 1000);
+    assert_eq!(position.lock_end_time, 87400);
+}
+
+#[test]
+#[should_panic(expected = "Staking is paused")]
+fn cannot_stake_when_paused() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.pause(&admin);
+    staking.stake(&user, &5000, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Stake amount must be positive")]
+fn cannot_stake_zero() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.stake(&user, &0, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Amount below tier minimum")]
+fn cannot_stake_below_minimum() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.stake(&user, &500, &tier_id); // Min is 1000
+}
+
+#[test]
+#[should_panic(expected = "Tier is not active")]
+fn cannot_stake_to_inactive_tier() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.deactivate_tier(&admin, &tier_id);
+    staking.stake(&user, &5000, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Tier not found")]
+fn cannot_stake_to_nonexistent_tier() {
+    let (env, staking, _token, _admin, user) = setup();
+    staking.stake(&user, &5000, &999);
+}
+
+#[test]
+fn stake_counter_increments() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    assert_eq!(staking.get_stake_counter(), 0);
+
+    staking.stake(&user, &5000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 1);
+
+    staking.stake(&user, &3000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  UNSTAKING TESTS
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn unstake_after_lock_period() {
+    let (env, staking, token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    // Stake at time 1000
+    env.ledger().set_timestamp(1000);
     staking.stake(&user, &5000, &tier_id);
 
     // Unstake after lock period (86400 seconds = 1 day)
@@ -457,7 +539,7 @@ fn unstake_after_lock_period() {
 
 #[test]
 fn unstake_early_with_penalty() {
-    let (env, staking, _token, admin, user) = setup();
+    let (env, staking, token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
     // Stake at time 1000
