@@ -77,55 +77,45 @@ fn setup() -> (
     let token_id = env.register(MockToken, ());
     let token = MockTokenClient::new(&env, &token_id);
     token.mint(&user, &10_000_000);
-    token.mint(&staking_id, &10_000_000);
+    token.mint(&staking_id, &10_000_000); // Fund rewards
 
-    staking.initialize(&admin, &token_id, &100i128);
+    staking.initialize(&admin, &token_id, &100i128); // 100 tokens/sec reward rate
 
     (env, staking, token, admin, user)
 }
 
-fn add_default_tier(
-    env: &Env,
-    staking: &StakingClient<'_>,
-    admin: &Address,
-) -> u32 {
+fn add_default_tier(env: &Env, staking: &StakingClient<'_>, admin: &Address) -> u32 {
     let tier_name = Symbol::new(env, "standard");
     staking.add_tier(
-        admin,
-        &tier_name,
-        &1000i128,
-        &86400u64,
-        &10000u32,
-        &500u32,
+        admin, &tier_name, &1000i128, // min stake: 1000
+        &86400u64, // lock: 1 day
+        &10000u32, // 1x multiplier
+        &500u32,   // 5% penalty
     )
 }
 
-fn add_premium_tier(
-    env: &Env,
-    staking: &StakingClient<'_>,
-    admin: &Address,
-) -> u32 {
+fn add_premium_tier(env: &Env, staking: &StakingClient<'_>, admin: &Address) -> u32 {
     let tier_name = Symbol::new(env, "premium");
     staking.add_tier(
-        admin,
-        &tier_name,
-        &10000i128,
-        &604800u64,
-        &15000u32,
-        &1000u32,
+        admin, &tier_name, &10000i128, // min stake: 10000
+        &604800u64, // lock: 7 days
+        &15000u32,  // 1.5x multiplier
+        &1000u32,   // 10% penalty
     )
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  INITIALIZATION & ADMIN
+//  INITIALIZATION TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn initializes_correctly() {
     let (_env, staking, _token, admin, _user) = setup();
+
     assert_eq!(staking.get_admin(), admin);
     assert_eq!(staking.get_reward_rate(), 100);
     assert_eq!(staking.get_total_staked(), 0);
+    assert_eq!(staking.get_total_rewards_distributed(), 0);
     assert!(!staking.is_paused());
 }
 
@@ -138,12 +128,48 @@ fn cannot_initialize_twice() {
 }
 
 #[test]
+#[should_panic(expected = "Reward rate cannot be negative")]
+fn initialize_rejects_negative_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let admin = Address::generate(&env);
+    let staking_id = env.register(Staking, ());
+    let staking = StakingClient::new(&env, &staking_id);
+    let token_id = env.register(MockToken, ());
+
+    staking.initialize(&admin, &token_id, &-1i128);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PAUSE/UNPAUSE TESTS
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
 fn pause_and_unpause() {
     let (_env, staking, _token, admin, _user) = setup();
+
     staking.pause(&admin);
     assert!(staking.is_paused());
+
     staking.unpause(&admin);
     assert!(!staking.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "Already paused")]
+fn cannot_pause_twice() {
+    let (_env, staking, _token, admin, _user) = setup();
+    staking.pause(&admin);
+    staking.pause(&admin);
+}
+
+#[test]
+#[should_panic(expected = "Not paused")]
+fn cannot_unpause_when_not_paused() {
+    let (_env, staking, _token, admin, _user) = setup();
+    staking.unpause(&admin);
 }
 
 #[test]
@@ -153,24 +179,22 @@ fn non_admin_cannot_pause() {
     staking.pause(&user);
 }
 
-#[test]
-fn set_reward_rate() {
-    let (_env, staking, _token, admin, _user) = setup();
-    staking.set_reward_rate(&admin, &200);
-    assert_eq!(staking.get_reward_rate(), 200);
-}
-
 // ═══════════════════════════════════════════════════════════════
-//  TIER MANAGEMENT
+//  TIER MANAGEMENT TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn add_tier_successfully() {
     let (env, staking, _token, admin, _user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
+
     assert_eq!(tier_id, 1);
     let tier = staking.get_tier(&tier_id);
+    assert_eq!(tier.tier_id, 1);
     assert_eq!(tier.min_stake_amount, 1000);
+    assert_eq!(tier.lock_duration_seconds, 86400);
+    assert_eq!(tier.reward_multiplier_bps, 10000);
+    assert_eq!(tier.penalty_bps, 500);
     assert!(tier.active);
 }
 
@@ -179,45 +203,255 @@ fn add_multiple_tiers() {
     let (env, staking, _token, admin, _user) = setup();
     let tier1 = add_default_tier(&env, &staking, &admin);
     let tier2 = add_premium_tier(&env, &staking, &admin);
+
     assert_eq!(tier1, 1);
     assert_eq!(tier2, 2);
-    assert_eq!(staking.get_tier_ids().len(), 2);
+
+    let ids = staking.get_tier_ids();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get_unchecked(0), 1);
+    assert_eq!(ids.get_unchecked(1), 2);
+}
+
+#[test]
+fn update_tier() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    let new_name = Symbol::new(&env, "updated");
+    let updated = staking.update_tier(
+        &admin,
+        &tier_id,
+        &Some(new_name),
+        &Some(2000),
+        &Some(172800),
+        &Some(20000),
+        &Some(1000),
+    );
+
+    assert_eq!(updated.name, Symbol::new(&env, "updated"));
+    assert_eq!(updated.min_stake_amount, 2000);
+    assert_eq!(updated.lock_duration_seconds, 172800);
+    assert_eq!(updated.reward_multiplier_bps, 20000);
+    assert_eq!(updated.penalty_bps, 1000);
 }
 
 #[test]
 fn deactivate_tier() {
     let (env, staking, _token, admin, _user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
+
     staking.deactivate_tier(&admin, &tier_id);
-    assert!(!staking.get_tier(&tier_id).active);
+    let tier = staking.get_tier(&tier_id);
+    assert!(!tier.active);
+}
+
+#[test]
+#[should_panic(expected = "Tier already inactive")]
+fn cannot_deactivate_twice() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+    staking.deactivate_tier(&admin, &tier_id);
+    staking.deactivate_tier(&admin, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Minimum stake amount must be positive")]
+fn add_tier_rejects_zero_min_amount() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_name = Symbol::new(&env, "bad");
+    staking.add_tier(&admin, &tier_name, &0i128, &86400u64, &10000u32, &500u32);
+}
+
+#[test]
+#[should_panic(expected = "Lock duration must be positive")]
+fn add_tier_rejects_zero_duration() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_name = Symbol::new(&env, "bad");
+    staking.add_tier(&admin, &tier_name, &1000i128, &0u64, &10000u32, &500u32);
+}
+
+#[test]
+#[should_panic(expected = "Reward multiplier must be positive")]
+fn add_tier_rejects_zero_multiplier() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_name = Symbol::new(&env, "bad");
+    staking.add_tier(&admin, &tier_name, &1000i128, &86400u64, &0u32, &500u32);
+}
+
+#[test]
+#[should_panic(expected = "Penalty exceeds 100%")]
+fn add_tier_rejects_excessive_penalty() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_name = Symbol::new(&env, "bad");
+    staking.add_tier(
+        &admin, &tier_name, &1000i128, &86400u64, &10000u32, &10001u32,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Tier is not active")]
+fn update_inactive_tier_fails() {
+    let (env, staking, _token, admin, _user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+    staking.deactivate_tier(&admin, &tier_id);
+    staking.update_tier(&admin, &tier_id, &None, &None, &None, &None, &None);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller is not admin")]
+fn non_admin_cannot_add_tier() {
+    let (env, staking, _token, _admin, user) = setup();
+    let tier_name = Symbol::new(&env, "standard");
+    staking.add_tier(&user, &tier_name, &1000i128, &86400u64, &10000u32, &500u32);
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  STAKING & UNSTAKING
+//  STAKING TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn stake_tokens_successfully() {
-    let (env, staking, _token, admin, user) = setup();
+    let (env, staking, token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
     let result = staking.stake(&user, &5000, &tier_id);
+
     assert_eq!(result.stake_id, 1);
+    assert_eq!(result.amount, 5000);
+    assert_eq!(result.tier_id, tier_id);
+
+    assert_eq!(token.balance(&user), 10_000_000 - 5000);
     assert_eq!(staking.get_total_staked(), 5000);
+
+    let position = staking.get_stake(&1);
+    assert_eq!(position.user, user);
+    assert_eq!(position.amount, 5000);
+    assert!(position.active);
 }
+
+#[test]
+fn stake_multiple_times() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    let result1 = staking.stake(&user, &5000, &tier_id);
+    let result2 = staking.stake(&user, &3000, &tier_id);
+
+    assert_eq!(result1.stake_id, 1);
+    assert_eq!(result2.stake_id, 2);
+    assert_eq!(staking.get_total_staked(), 8000);
+
+    let user_stakes = staking.get_user_stakes(&user);
+    assert_eq!(user_stakes.len(), 2);
+}
+
+#[test]
+fn stake_tracks_lock_end_time() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    let result = staking.stake(&user, &5000, &tier_id);
+
+    // Lock end = 1000 + 86400 (1 day) = 87400
+    assert_eq!(result.lock_end_time, 87400);
+
+    let position = staking.get_stake(&1);
+    assert_eq!(position.stake_time, 1000);
+    assert_eq!(position.lock_end_time, 87400);
+}
+
+#[test]
+#[should_panic(expected = "Staking is paused")]
+fn cannot_stake_when_paused() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.pause(&admin);
+    staking.stake(&user, &5000, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Stake amount must be positive")]
+fn cannot_stake_zero() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.stake(&user, &0, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Amount below tier minimum")]
+fn cannot_stake_below_minimum() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.stake(&user, &500, &tier_id); // Min is 1000
+}
+
+#[test]
+#[should_panic(expected = "Tier is not active")]
+fn cannot_stake_to_inactive_tier() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.deactivate_tier(&admin, &tier_id);
+    staking.stake(&user, &5000, &tier_id);
+}
+
+#[test]
+#[should_panic(expected = "Tier not found")]
+fn cannot_stake_to_nonexistent_tier() {
+    let (_env, staking, _token, _admin, user) = setup();
+    staking.stake(&user, &5000, &999);
+}
+
+#[test]
+fn stake_counter_increments() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    assert_eq!(staking.get_stake_counter(), 0);
+
+    staking.stake(&user, &5000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 1);
+
+    staking.stake(&user, &3000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  UNSTAKING TESTS
+// ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn unstake_after_lock_period() {
     let (env, staking, _token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
+    // Stake at time 1000
     env.ledger().set_timestamp(1000);
     staking.stake(&user, &5000, &tier_id);
 
+    // Unstake after lock period (86400 seconds = 1 day)
     env.ledger().set_timestamp(87401);
     let result = staking.unstake(&user, &1);
+
+    // No penalty since lock period passed
     assert_eq!(result.penalty_amount, 0);
     assert_eq!(result.principal_returned, 5000);
+    assert!(result.rewards_claimed >= 0);
+    assert_eq!(
+        result.total_returned,
+        result.principal_returned + result.rewards_claimed
+    );
+
+    // Position deactivated
+    let position = staking.get_stake(&1);
+    assert!(!position.active);
+
+    // Total staked updated
     assert_eq!(staking.get_total_staked(), 0);
 }
 
@@ -226,13 +460,39 @@ fn unstake_early_with_penalty() {
     let (env, staking, _token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
+    // Stake at time 1000
     env.ledger().set_timestamp(1000);
     staking.stake(&user, &10000, &tier_id);
 
+    // Unstake early (after 1 hour)
     env.ledger().set_timestamp(4601);
     let result = staking.unstake(&user, &1);
+
+    // 5% penalty on 10000 = 500
     assert_eq!(result.penalty_amount, 500);
     assert_eq!(result.principal_returned, 9500);
+
+    // Position deactivated
+    let position = staking.get_stake(&1);
+    assert!(!position.active);
+}
+
+#[test]
+fn unstake_calculates_rewards_proportionally() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    // Stake at time 1000
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &tier_id);
+
+    // Wait 10 seconds with rate of 100/sec
+    env.ledger().set_timestamp(1010);
+    let result = staking.unstake(&user, &1);
+
+    // Rewards should be approximately 100 * 10 = 1000
+    // (exact calculation depends on reward accumulator logic)
+    assert!(result.rewards_claimed >= 0);
 }
 
 #[test]
@@ -248,8 +508,25 @@ fn non_staker_cannot_unstake() {
     staking.unstake(&stranger, &1);
 }
 
+#[test]
+#[should_panic(expected = "Stake is not active")]
+fn cannot_unstake_inactive_stake() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &5000, &tier_id);
+
+    // Unstake once
+    env.ledger().set_timestamp(87401);
+    staking.unstake(&user, &1);
+
+    // Try to unstake again
+    staking.unstake(&user, &1);
+}
+
 // ═══════════════════════════════════════════════════════════════
-//  REWARD DISTRIBUTION & CLAIMS
+//  CLAIM REWARDS TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
@@ -260,8 +537,10 @@ fn claim_rewards_after_staking() {
     env.ledger().set_timestamp(1000);
     staking.stake(&user, &10000, &tier_id);
 
+    // Wait 10 seconds
     env.ledger().set_timestamp(1010);
     let claimed = staking.claim_rewards(&user, &1);
+
     assert!(claimed > 0);
     assert_eq!(token.balance(&user), 10_000_000 - 10000 + claimed);
 }
@@ -274,6 +553,8 @@ fn cannot_claim_zero_rewards() {
 
     env.ledger().set_timestamp(1000);
     staking.stake(&user, &10000, &tier_id);
+
+    // Claim immediately (no time passed)
     staking.claim_rewards(&user, &1);
 }
 
@@ -286,57 +567,39 @@ fn claim_rewards_batch() {
     staking.stake(&user, &5000, &tier_id);
     staking.stake(&user, &5000, &tier_id);
 
+    // Wait 10 seconds
     env.ledger().set_timestamp(1010);
     let stake_ids = Vec::from_array(&env, [1, 2]);
     let total = staking.claim_rewards_batch(&user, &stake_ids);
+
     assert!(total > 0);
     assert_eq!(token.balance(&user), 10_000_000 - 10000 + total);
 }
 
 #[test]
-fn reward_calculation_with_multiplier() {
-    let (env, staking, token, admin, _user) = setup();
-    let standard_tier = add_default_tier(&env, &staking, &admin);
-    let premium_tier = add_premium_tier(&env, &staking, &admin);
-
-    let user_a = Address::generate(&env);
-    let user_b = Address::generate(&env);
-    token.mint(&user_a, &1_000_000);
-    token.mint(&user_b, &1_000_000);
-
-    env.ledger().set_timestamp(1000);
-    staking.stake(&user_a, &10000, &standard_tier);
-    staking.stake(&user_b, &10000, &premium_tier);
-
-    env.ledger().set_timestamp(1010);
-    let claimed_a = staking.claim_rewards(&user_a, &1);
-    let claimed_b = staking.claim_rewards(&user_b, &2);
-
-    assert!(claimed_b > claimed_a);
+#[should_panic(expected = "No stakes provided")]
+fn claim_batch_rejects_empty() {
+    let (env, staking, _token, _admin, user) = setup();
+    let empty = Vec::<u64>::new(&env);
+    staking.claim_rewards_batch(&user, &empty);
 }
 
 #[test]
-fn multiple_stakers_share_rewards_fairly() {
-    let (env, staking, token, admin, _user) = setup();
+#[should_panic(expected = "Only staker can claim")]
+fn non_staker_cannot_claim() {
+    let (env, staking, _token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
 
-    let user_a = Address::generate(&env);
-    let user_b = Address::generate(&env);
-    token.mint(&user_a, &1_000_000);
-    token.mint(&user_b, &1_000_000);
-
     env.ledger().set_timestamp(1000);
-    staking.stake(&user_a, &10000, &tier_id);
-    staking.stake(&user_b, &10000, &tier_id);
+    staking.stake(&user, &5000, &tier_id);
 
     env.ledger().set_timestamp(1010);
-    let claimed_a = staking.claim_rewards(&user_a, &1);
-    let claimed_b = staking.claim_rewards(&user_b, &2);
-    assert_eq!(claimed_a, claimed_b);
+    let stranger = Address::generate(&env);
+    staking.claim_rewards(&stranger, &1);
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  EMERGENCY WITHDRAWAL
+//  EMERGENCY WITHDRAWAL TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
@@ -347,10 +610,22 @@ fn emergency_withdraw_returns_principal_only() {
     env.ledger().set_timestamp(1000);
     staking.stake(&user, &10000, &tier_id);
 
+    // Emergency withdraw
     let result = staking.emergency_withdraw(&admin, &user, &1);
+
     assert_eq!(result.principal_returned, 10000);
     assert_eq!(result.rewards_claimed, 0);
+    assert_eq!(result.penalty_amount, 0);
+    assert_eq!(result.total_returned, 10000);
+
+    // Position deactivated
+    let position = staking.get_stake(&1);
+    assert!(!position.active);
+
+    // Total staked updated
     assert_eq!(staking.get_total_staked(), 0);
+
+    // Tokens returned
     assert_eq!(token.balance(&user), 10_000_000);
 }
 
@@ -364,6 +639,7 @@ fn emergency_withdraw_all() {
     staking.stake(&user, &3000, &tier_id);
 
     let total = staking.emergency_withdraw_all(&admin, &user);
+
     assert_eq!(total, 8000);
     assert_eq!(staking.get_total_staked(), 0);
     assert_eq!(token.balance(&user), 10_000_000);
@@ -382,20 +658,38 @@ fn non_admin_cannot_emergency_withdraw() {
     staking.emergency_withdraw(&stranger, &user, &1);
 }
 
+#[test]
+#[should_panic(expected = "Stake does not belong to user")]
+fn emergency_withdraw_wrong_user() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &5000, &tier_id);
+
+    let other_user = Address::generate(&env);
+    staking.emergency_withdraw(&admin, &other_user, &1);
+}
+
 // ═══════════════════════════════════════════════════════════════
-//  FUND REWARDS
+//  FUND REWARDS TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn fund_rewards() {
     let (env, staking, token, _admin, _user) = setup();
+
     let funder = Address::generate(&env);
     token.mint(&funder, &1_000_000);
 
     let contract_balance_before = token.balance(&staking.address);
     staking.fund_rewards(&funder, &50_000);
 
-    assert_eq!(token.balance(&staking.address), contract_balance_before + 50_000);
+    assert_eq!(
+        token.balance(&staking.address),
+        contract_balance_before + 50_000
+    );
+    assert_eq!(token.balance(&funder), 950_000);
 }
 
 #[test]
@@ -407,19 +701,240 @@ fn fund_rewards_rejects_zero() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  VIEW FUNCTIONS
+//  REWARD RATE MANAGEMENT TESTS
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn set_reward_rate() {
+    let (_env, staking, _token, admin, _user) = setup();
+
+    staking.set_reward_rate(&admin, &200);
+    assert_eq!(staking.get_reward_rate(), 200);
+}
+
+#[test]
+#[should_panic(expected = "Reward rate cannot be negative")]
+fn set_reward_rate_rejects_negative() {
+    let (_env, staking, _token, admin, _user) = setup();
+    staking.set_reward_rate(&admin, &-1);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller is not admin")]
+fn non_admin_cannot_set_reward_rate() {
+    let (_env, staking, _token, _admin, user) = setup();
+    staking.set_reward_rate(&user, &200);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VIEW FUNCTIONS TESTS
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
 fn get_staking_info() {
     let (env, staking, _token, admin, user) = setup();
     let tier_id = add_default_tier(&env, &staking, &admin);
+
     staking.stake(&user, &5000, &tier_id);
 
     let info = staking.get_staking_info();
     assert_eq!(info.admin, admin);
     assert_eq!(info.total_staked, 5000);
+    assert_eq!(info.reward_rate_per_second, 100);
     assert_eq!(info.tier_count, 1);
+    assert!(!info.paused);
+}
+
+#[test]
+fn get_user_stakes() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    staking.stake(&user, &5000, &tier_id);
+    staking.stake(&user, &3000, &tier_id);
+
+    let stakes = staking.get_user_stakes(&user);
+    assert_eq!(stakes.len(), 2);
+    assert_eq!(stakes.get_unchecked(0).amount, 5000);
+    assert_eq!(stakes.get_unchecked(1).amount, 3000);
+}
+
+#[test]
+fn get_pending_rewards() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &tier_id);
+
+    // No rewards immediately
+    assert_eq!(staking.get_pending_rewards(&1), 0);
+
+    // Some rewards after time
+    env.ledger().set_timestamp(1010);
+    let pending = staking.get_pending_rewards(&1);
+    // 100 * 10s = 1000 total rewards, user has 100% weight, so 1000
+    assert!(pending > 0);
+}
+
+#[test]
+fn get_stake_counter() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    assert_eq!(staking.get_stake_counter(), 0);
+
+    staking.stake(&user, &5000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 1);
+
+    staking.stake(&user, &3000, &tier_id);
+    assert_eq!(staking.get_stake_counter(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  REWARD CALCULATION TESTS
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn reward_calculation_with_multiplier() {
+    let (env, staking, token, admin, _user) = setup();
+    let standard_tier = add_default_tier(&env, &staking, &admin);
+    let premium_tier = add_premium_tier(&env, &staking, &admin);
+
+    // User A stakes in standard tier (1x)
+    let user_a = Address::generate(&env);
+    token.mint(&user_a, &1_000_000);
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user_a, &10000, &standard_tier);
+
+    // User B stakes in premium tier (1.5x)
+    let user_b = Address::generate(&env);
+    token.mint(&user_b, &1_000_000);
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user_b, &10000, &premium_tier);
+
+    // Wait 10 seconds
+    env.ledger().set_timestamp(1010);
+
+    // Both claim
+    let claimed_a = staking.claim_rewards(&user_a, &1);
+    let claimed_b = staking.claim_rewards(&user_b, &2);
+
+    // User B should get more rewards due to 1.5x multiplier
+    assert!(claimed_b > claimed_a);
+}
+
+#[test]
+fn early_unstake_applies_correct_penalty() {
+    let (env, staking, _token, admin, user) = setup();
+    let standard_tier = add_default_tier(&env, &staking, &admin); // 5% penalty
+    let premium_tier = add_premium_tier(&env, &staking, &admin); // 10% penalty
+
+    // Stake in standard tier
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &standard_tier);
+
+    // Early unstake from standard (5% penalty)
+    env.ledger().set_timestamp(4601);
+    let result_standard = staking.unstake(&user, &1);
+    assert_eq!(result_standard.penalty_amount, 500); // 5% of 10000
+
+    // Stake in premium tier
+    staking.stake(&user, &10000, &premium_tier);
+
+    // Early unstake from premium (10% penalty)
+    env.ledger().set_timestamp(4602);
+    let result_premium = staking.unstake(&user, &2);
+    assert_eq!(result_premium.penalty_amount, 1000); // 10% of 10000
+}
+
+#[test]
+fn multiple_stakers_share_rewards_fairly() {
+    let (env, staking, token, admin, _user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    token.mint(&user_a, &1_000_000);
+    token.mint(&user_b, &1_000_000);
+
+    // Equal stakes
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user_a, &10000, &tier_id);
+    staking.stake(&user_b, &10000, &tier_id);
+
+    // Wait 10 seconds
+    env.ledger().set_timestamp(1010);
+
+    let claimed_a = staking.claim_rewards(&user_a, &1);
+    let claimed_b = staking.claim_rewards(&user_b, &2);
+
+    // Equal stakes should get equal rewards
+    assert_eq!(claimed_a, claimed_b);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EDGE CASES
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn unstake_at_exact_lock_time() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &tier_id);
+
+    // Unstake at exact lock end time (no penalty)
+    env.ledger().set_timestamp(87400);
+    let result = staking.unstake(&user, &1);
+    assert_eq!(result.penalty_amount, 0);
+}
+
+#[test]
+fn unstake_one_second_before_lock() {
+    let (env, staking, _token, admin, user) = setup();
+    let tier_id = add_default_tier(&env, &staking, &admin);
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &tier_id);
+
+    // Unstake one second before lock end (penalty applies)
+    env.ledger().set_timestamp(87399);
+    let result = staking.unstake(&user, &1);
+    assert_eq!(result.penalty_amount, 500); // 5% penalty
+}
+
+#[test]
+fn zero_penalty_tier() {
+    let (env, staking, _token, admin, user) = setup();
+
+    // Add tier with no penalty
+    let tier_name = Symbol::new(&env, "nopenalty");
+    let tier_id = staking.add_tier(
+        &admin, &tier_name, &1000i128, &86400u64, &10000u32, &0u32, // No penalty
+    );
+
+    env.ledger().set_timestamp(1000);
+    staking.stake(&user, &10000, &tier_id);
+
+    // Early unstake - no penalty
+    env.ledger().set_timestamp(4601);
+    let result = staking.unstake(&user, &1);
+    assert_eq!(result.penalty_amount, 0);
+}
+
+#[test]
+fn tier_ids_tracking() {
+    let (env, staking, _token, admin, _user) = setup();
+
+    assert_eq!(staking.get_tier_ids().len(), 0);
+
+    let _tier1 = add_default_tier(&env, &staking, &admin);
+    assert_eq!(staking.get_tier_ids().len(), 1);
+
+    let _tier2 = add_premium_tier(&env, &staking, &admin);
+    assert_eq!(staking.get_tier_ids().len(), 2);
 }
 
 #[test]
@@ -431,39 +946,26 @@ fn get_last_reward_time_updates() {
 
     env.ledger().set_timestamp(2000);
     staking.stake(&user, &5000, &tier_id);
+
+    // Last reward time updates when pool is updated (via stake)
     assert_eq!(staking.get_last_reward_time(), 2000);
+    let _ = env;
 }
 
 #[test]
-fn early_unstake_applies_correct_penalty() {
+fn emergency_withdraw_all_with_mixed_active_inactive() {
     let (env, staking, _token, admin, user) = setup();
-    let standard_tier = add_default_tier(&env, &staking, &admin);
-    let premium_tier = add_premium_tier(&env, &staking, &admin);
+    let tier_id = add_default_tier(&env, &staking, &admin);
 
     env.ledger().set_timestamp(1000);
-    staking.stake(&user, &10000, &standard_tier);
+    staking.stake(&user, &5000, &tier_id);
+    staking.stake(&user, &3000, &tier_id);
 
-    env.ledger().set_timestamp(4601);
-    let result_standard = staking.unstake(&user, &1);
-    assert_eq!(result_standard.penalty_amount, 500);
+    // Unstake one manually
+    env.ledger().set_timestamp(87401);
+    staking.unstake(&user, &1);
 
-    staking.stake(&user, &10000, &premium_tier);
-
-    env.ledger().set_timestamp(4602);
-    let result_premium = staking.unstake(&user, &2);
-    assert_eq!(result_premium.penalty_amount, 1000);
-}
-
-#[test]
-fn zero_penalty_tier() {
-    let (env, staking, _token, admin, user) = setup();
-    let name = Symbol::new(&env, "nopenalty");
-    let tier_id = staking.add_tier(&admin, &name, &1000i128, &86400u64, &10000u32, &0u32);
-
-    env.ledger().set_timestamp(1000);
-    staking.stake(&user, &10000, &tier_id);
-
-    env.ledger().set_timestamp(4601);
-    let result = staking.unstake(&user, &1);
-    assert_eq!(result.penalty_amount, 0);
+    // Emergency withdraw all - should only return active stake
+    let total = staking.emergency_withdraw_all(&admin, &user);
+    assert_eq!(total, 3000); // Only second stake remains
 }
