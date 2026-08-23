@@ -1,7 +1,7 @@
-/// Error constants for the portfolio manager contract.
-///
-/// This contract uses panic!() with descriptive messages following the
-/// same convention as staking/vault contracts.
+//! Error constants for the portfolio manager contract.
+//!
+//! This contract uses panic!() with descriptive messages following the
+//! same convention as staking/vault contracts.
 
 #[allow(dead_code)]
 pub const ALREADY_INITIALIZED: &str = "Already initialized";

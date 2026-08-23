@@ -249,18 +249,12 @@ impl Templates {
 
     /// Validate that target weights sum to BPS_DENOMINATOR
     pub fn validate_weights(allocations: &Vec<AssetAllocation>) -> bool {
-        let total: i128 = allocations
-            .iter()
-            .map(|a| a.weight_bps as i128)
-            .sum();
+        let total: i128 = allocations.iter().map(|a| a.weight_bps as i128).sum();
         total == BPS_DENOMINATOR
     }
 
     /// Create equal-weight allocations for a list of tokens
-    pub fn equal_weight_allocations(
-        env: &Env,
-        tokens: &Vec<Address>,
-    ) -> Vec<AssetAllocation> {
+    pub fn equal_weight_allocations(env: &Env, tokens: &Vec<Address>) -> Vec<AssetAllocation> {
         let count = tokens.len();
         if count == 0 {
             return Vec::new(env);

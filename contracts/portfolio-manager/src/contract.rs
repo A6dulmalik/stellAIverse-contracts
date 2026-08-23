@@ -42,10 +42,14 @@ impl PortfolioManager {
 
         Storage::set_admin(&env, &admin);
         Storage::set_paused(&env, false);
-        env.storage().instance().set(&DataKey::ReentrancyLock, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReentrancyLock, &false);
 
-        env.events()
-            .publish((symbol_short!("pm_init"),), (admin, env.ledger().timestamp()));
+        env.events().publish(
+            (symbol_short!("pm_init"),),
+            (admin, env.ledger().timestamp()),
+        );
     }
 
     // ╔═══════════════════════════════════════════════════════════╗
@@ -187,11 +191,21 @@ impl PortfolioManager {
         token_client.transfer(&user, &contract_address, &amount);
 
         // Calculate shares to mint
-        let shares = Self::calculate_shares_for_deposit(amount, portfolio.total_assets, portfolio.total_supply);
+        let shares = Self::calculate_shares_for_deposit(
+            amount,
+            portfolio.total_assets,
+            portfolio.total_supply,
+        );
 
         // Update portfolio totals
-        portfolio.total_assets = portfolio.total_assets.checked_add(amount).expect("Assets overflow");
-        portfolio.total_supply = portfolio.total_supply.checked_add(shares).expect("Supply overflow");
+        portfolio.total_assets = portfolio
+            .total_assets
+            .checked_add(amount)
+            .expect("Assets overflow");
+        portfolio.total_supply = portfolio
+            .total_supply
+            .checked_add(shares)
+            .expect("Supply overflow");
         Storage::set_portfolio(&env, &portfolio);
 
         // Update or create user position
@@ -199,7 +213,10 @@ impl PortfolioManager {
         if Storage::has_user_position(&env, &user, portfolio_id) {
             let mut pos = Storage::get_user_position(&env, &user, portfolio_id);
             pos.shares = pos.shares.checked_add(shares).expect("Shares overflow");
-            pos.total_deposited = pos.total_deposited.checked_add(amount).expect("Deposit overflow");
+            pos.total_deposited = pos
+                .total_deposited
+                .checked_add(amount)
+                .expect("Deposit overflow");
             pos.last_activity_at = now;
             Storage::set_user_position(&env, &user, portfolio_id, &pos);
         } else {
@@ -219,7 +236,14 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_dep"),),
-            (user, portfolio_id, amount, shares, portfolio.total_assets, portfolio.total_supply),
+            (
+                user,
+                portfolio_id,
+                amount,
+                shares,
+                portfolio.total_assets,
+                portfolio.total_supply,
+            ),
         );
 
         shares
@@ -243,11 +267,21 @@ impl PortfolioManager {
         }
 
         // Calculate the value of shares being redeemed
-        let gross_assets = Self::calculate_assets_for_withdrawal(shares, portfolio.total_assets, portfolio.total_supply);
+        let gross_assets = Self::calculate_assets_for_withdrawal(
+            shares,
+            portfolio.total_assets,
+            portfolio.total_supply,
+        );
 
         // Update portfolio totals
-        portfolio.total_assets = portfolio.total_assets.checked_sub(gross_assets).expect("Assets underflow");
-        portfolio.total_supply = portfolio.total_supply.checked_sub(shares).expect("Supply underflow");
+        portfolio.total_assets = portfolio
+            .total_assets
+            .checked_sub(gross_assets)
+            .expect("Assets underflow");
+        portfolio.total_supply = portfolio
+            .total_supply
+            .checked_sub(shares)
+            .expect("Supply underflow");
 
         let new_nav = if portfolio.total_supply > 0 {
             portfolio.total_assets * PRECISION_FACTOR / portfolio.total_supply
@@ -259,7 +293,10 @@ impl PortfolioManager {
 
         // Update user position
         pos.shares = pos.shares.checked_sub(shares).expect("Shares underflow");
-        pos.total_withdrawn = pos.total_withdrawn.checked_add(gross_assets).expect("Withdraw overflow");
+        pos.total_withdrawn = pos
+            .total_withdrawn
+            .checked_add(gross_assets)
+            .expect("Withdraw overflow");
         pos.last_activity_at = env.ledger().timestamp();
         Storage::set_user_position(&env, &user, portfolio_id, &pos);
 
@@ -336,7 +373,7 @@ impl PortfolioManager {
         // Update asset positions with new balances
         let mut total_new_value: i128 = 0;
         for i in 0..asset_count {
-            let mut pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
             let new_balance = new_asset_balances.get_unchecked(i);
 
             // Calculate value change
@@ -351,14 +388,19 @@ impl PortfolioManager {
                 0
             };
 
-            Storage::set_asset_position(&env, portfolio_id, i as u32, &pos);
-            total_new_value = total_new_value.checked_add(new_value).expect("Value overflow");
+            Storage::set_asset_position(&env, portfolio_id, i, &pos);
+            total_new_value = total_new_value
+                .checked_add(new_value)
+                .expect("Value overflow");
         }
 
         // Update portfolio total assets to reflect new position values
         portfolio.total_assets = total_new_value;
         portfolio.last_rebalance_time = now;
-        portfolio.rebalance_count = portfolio.rebalance_count.checked_add(1).expect("Count overflow");
+        portfolio.rebalance_count = portfolio
+            .rebalance_count
+            .checked_add(1)
+            .expect("Count overflow");
 
         let trigger = if now < prev_rebalance_time + min_interval {
             // Within time interval - only admin can force rebalance
@@ -386,7 +428,13 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_rbal"),),
-            (portfolio_id, rebalance_id, nav_before, portfolio.total_assets, slippage_bps),
+            (
+                portfolio_id,
+                rebalance_id,
+                nav_before,
+                portfolio.total_assets,
+                slippage_bps,
+            ),
         );
 
         record
@@ -407,14 +455,22 @@ impl PortfolioManager {
         let now = env.ledger().timestamp();
         let interval = Self::rebalance_interval_seconds(portfolio.rebalance_frequency);
         if now >= portfolio.last_rebalance_time + interval {
-            let record = Self::rebalance(env.clone(), caller, portfolio_id, buys, sells, new_asset_balances);
+            let record = Self::rebalance(
+                env.clone(),
+                caller,
+                portfolio_id,
+                buys,
+                sells,
+                new_asset_balances,
+            );
             return Some(record);
         }
 
         // Check drift trigger
         let max_drift = Self::max_drift(&env, portfolio_id, &new_asset_balances);
         if max_drift > portfolio.drift_tolerance_bps {
-            let record = Self::rebalance(env, caller, portfolio_id, buys, sells, new_asset_balances);
+            let record =
+                Self::rebalance(env, caller, portfolio_id, buys, sells, new_asset_balances);
             return Some(record);
         }
 
@@ -446,8 +502,9 @@ impl PortfolioManager {
         }
 
         let mut portfolio = Storage::get_portfolio(&env, portfolio_id);
-        let mut pos = Storage::get_asset_position(&env, portfolio_id, asset_index);            let new_value = new_balance * price / PRECISION_FACTOR;
-            let value_diff = new_value - pos.balance * pos.last_price / PRECISION_FACTOR;
+        let mut pos = Storage::get_asset_position(&env, portfolio_id, asset_index);
+        let new_value = new_balance * price / PRECISION_FACTOR;
+        let value_diff = new_value - pos.balance * pos.last_price / PRECISION_FACTOR;
 
         pos.balance = new_balance;
         pos.last_price = price;
@@ -461,7 +518,10 @@ impl PortfolioManager {
         Storage::set_asset_position(&env, portfolio_id, asset_index, &pos);
 
         // Update portfolio total assets
-        portfolio.total_assets = portfolio.total_assets.checked_add(value_diff).expect("NAV overflow");
+        portfolio.total_assets = portfolio
+            .total_assets
+            .checked_add(value_diff)
+            .expect("NAV overflow");
         Storage::set_portfolio(&env, &portfolio);
 
         env.events().publish(
@@ -496,21 +556,28 @@ impl PortfolioManager {
         for i in 0..dividend_amounts.len() {
             let (token, amount) = dividend_amounts.get_unchecked(i);
             // Find the asset and add to its position
-            for j in 0..portfolio.target_weights.len() {
-                let pos = Storage::get_asset_position(&env, portfolio_id, j as u32);
+            for j in 0..portfolio.target_weights.len() {let pos = Storage::get_asset_position(&env, portfolio_id, j);
                 if pos.token == token {
                     let mut updated_pos = pos;
                     updated_pos.balance = updated_pos.balance.checked_add(amount).expect("Balance overflow");
-                    Storage::set_asset_position(&env, portfolio_id, j as u32, &updated_pos);
-                    total_dividend = total_dividend.checked_add(amount).expect("Dividend overflow");
+                    Storage::set_asset_position(&env, portfolio_id, j, &updated_pos);
+                    total_dividend = total_dividend
+                        .checked_add(amount)
+                        .expect("Dividend overflow");
                     break;
                 }
             }
         }
 
         // Compound: add dividends to total assets
-        portfolio.total_assets = portfolio.total_assets.checked_add(total_dividend).expect("Assets overflow");
-        portfolio.accumulated_dividends = portfolio.accumulated_dividends.checked_add(total_dividend).expect("Accum overflow");
+        portfolio.total_assets = portfolio
+            .total_assets
+            .checked_add(total_dividend)
+            .expect("Assets overflow");
+        portfolio.accumulated_dividends = portfolio
+            .accumulated_dividends
+            .checked_add(total_dividend)
+            .expect("Accum overflow");
         portfolio.last_dividend_time = env.ledger().timestamp();
 
         let now = env.ledger().timestamp();
@@ -542,7 +609,12 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_div"),),
-            (portfolio_id, total_dividend, portfolio.total_assets, per_share),
+            (
+                portfolio_id,
+                total_dividend,
+                portfolio.total_assets,
+                per_share,
+            ),
         );
 
         record
@@ -570,10 +642,8 @@ impl PortfolioManager {
         token_client.transfer(&contract_address, &user, &amount);
         Storage::exit_non_reentrant(&env);
 
-        env.events().publish(
-            (symbol_short!("pm_dclm"),),
-            (user, portfolio_id, amount),
-        );
+        env.events()
+            .publish((symbol_short!("pm_dclm"),), (user, portfolio_id, amount));
 
         amount
     }
@@ -583,7 +653,11 @@ impl PortfolioManager {
     // ╚═══════════════════════════════════════════════════════════╝
 
     /// Record a performance snapshot. Should be called periodically.
-    pub fn record_performance_snapshot(env: Env, caller: Address, portfolio_id: u64) -> PerformanceSnapshot {
+    pub fn record_performance_snapshot(
+        env: Env,
+        caller: Address,
+        portfolio_id: u64,
+    ) -> PerformanceSnapshot {
         caller.require_auth();
 
         let portfolio = Storage::get_portfolio(&env, portfolio_id);
@@ -605,11 +679,18 @@ impl PortfolioManager {
         };
 
         // Update accumulators for Sharpe ratio
-        acc.return_sum = acc.return_sum.checked_add(periodic_return).expect("Return sum overflow");
-        acc.return_squared_sum = acc.return_squared_sum
+        acc.return_sum = acc
+            .return_sum
+            .checked_add(periodic_return)
+            .expect("Return sum overflow");
+        acc.return_squared_sum = acc
+            .return_squared_sum
             .checked_add(periodic_return * periodic_return / PRECISION_FACTOR)
             .expect("Return sq overflow");
-        acc.observation_count = acc.observation_count.checked_add(1).expect("Count overflow");
+        acc.observation_count = acc
+            .observation_count
+            .checked_add(1)
+            .expect("Count overflow");
 
         // Update max drawdown
         if nav_per_share > acc.peak_nav {
@@ -762,7 +843,11 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_gov"),),
-            (portfolio_id, Symbol::new(&env, "drift_tol"), new_tolerance_bps as i128),
+            (
+                portfolio_id,
+                Symbol::new(&env, "drift_tol"),
+                new_tolerance_bps as i128,
+            ),
         );
     }
 
@@ -782,17 +867,16 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_gov"),),
-            (portfolio_id, Symbol::new(&env, "rbal_freq"), frequency as i128),
+            (
+                portfolio_id,
+                Symbol::new(&env, "rbal_freq"),
+                frequency as i128,
+            ),
         );
     }
 
     /// Update max slippage
-    pub fn set_max_slippage(
-        env: Env,
-        admin: Address,
-        portfolio_id: u64,
-        max_slippage_bps: u32,
-    ) {
+    pub fn set_max_slippage(env: Env, admin: Address, portfolio_id: u64, max_slippage_bps: u32) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
 
@@ -802,7 +886,11 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_gov"),),
-            (portfolio_id, Symbol::new(&env, "max_slip"), max_slippage_bps as i128),
+            (
+                portfolio_id,
+                Symbol::new(&env, "max_slip"),
+                max_slippage_bps as i128,
+            ),
         );
     }
 
@@ -839,8 +927,7 @@ impl PortfolioManager {
 
         // Update target weights and current weights
         for i in 0..new_count {
-            let new_weight = new_weights.get_unchecked(i);
-            let mut pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let new_weight = new_weights.get_unchecked(i);let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
             pos.target_weight_bps = new_weight.weight_bps;
 
             // Recalculate current weight
@@ -849,7 +936,7 @@ impl PortfolioManager {
                 pos.current_weight_bps = (asset_value * BPS_DENOMINATOR / portfolio.total_assets) as u32;
             }
 
-            Storage::set_asset_position(&env, portfolio_id, i as u32, &pos);
+            Storage::set_asset_position(&env, portfolio_id, i, &pos);
         }
 
         portfolio.target_weights = new_weights;
@@ -986,10 +1073,10 @@ impl PortfolioManager {
         let mut drifts = Vec::new(&env);
 
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(&env, portfolio_id, i);
             let target = pos.target_weight_bps as i32;
             let current = pos.current_weight_bps as i32;
-            let drift = (target - current).unsigned_abs() as u32;
+            let drift = (target - current).unsigned_abs();
             drifts.push_back(drift);
         }
 
@@ -1001,7 +1088,7 @@ impl PortfolioManager {
         let portfolio = Storage::get_portfolio(&env, portfolio_id);
         let mut positions = Vec::new(&env);
         for i in 0..portfolio.target_weights.len() {
-            positions.push_back(Storage::get_asset_position(&env, portfolio_id, i as u32));
+            positions.push_back(Storage::get_asset_position(&env, portfolio_id, i));
         }
         positions
     }
@@ -1021,7 +1108,11 @@ impl PortfolioManager {
         if counter == 0 {
             return None;
         }
-        Some(Storage::get_performance_snapshot(&env, portfolio_id, counter))
+        Some(Storage::get_performance_snapshot(
+            &env,
+            portfolio_id,
+            counter,
+        ))
     }
 
     /// Get total dividends collected for a portfolio
@@ -1095,7 +1186,7 @@ impl PortfolioManager {
                 last_price: PRECISION_FACTOR, // Default 1:1
                 last_price_update: now,
             };
-            Storage::set_asset_position(env, portfolio_id, i as u32, &pos);
+            Storage::set_asset_position(env, portfolio_id, i, &pos);
         }
 
         // Initialize performance accumulator
@@ -1113,7 +1204,12 @@ impl PortfolioManager {
 
         env.events().publish(
             (symbol_short!("pm_crt"),),
-            (portfolio_id, creator.clone(), name.clone(), allocations.len() as u32),
+            (
+                portfolio_id,
+                creator.clone(),
+                name.clone(),
+                allocations.len(),
+            ),
         );
 
         portfolio_id
@@ -1137,7 +1233,11 @@ impl PortfolioManager {
     }
 
     /// Calculate assets to return for a withdrawal
-    fn calculate_assets_for_withdrawal(shares: i128, total_assets: i128, total_supply: i128) -> i128 {
+    fn calculate_assets_for_withdrawal(
+        shares: i128,
+        total_assets: i128,
+        total_supply: i128,
+    ) -> i128 {
         shares * total_assets / total_supply
     }
 
@@ -1159,7 +1259,7 @@ impl PortfolioManager {
 
         // First pass: compute total value with new balances
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(env, portfolio_id, i);
             let balance = new_balances.get_unchecked(i);
             let value = balance * pos.last_price / PRECISION_FACTOR;
             total_value = total_value.checked_add(value).expect("Value overflow");
@@ -1171,12 +1271,12 @@ impl PortfolioManager {
 
         // Second pass: compute drift per asset
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(env, portfolio_id, i);
             let balance = new_balances.get_unchecked(i);
             let value = balance * pos.last_price / PRECISION_FACTOR;
             let current_weight = (value * BPS_DENOMINATOR / total_value) as i32;
             let target_weight = pos.target_weight_bps as i32;
-            let drift = (target_weight - current_weight).unsigned_abs() as u32;
+            let drift = (target_weight - current_weight).unsigned_abs();
             if drift > max_drift {
                 max_drift = drift;
             }
@@ -1191,11 +1291,15 @@ impl PortfolioManager {
         let mut total: i128 = 0;
         for i in 0..buys.len() {
             let swap = buys.get_unchecked(i);
-            total = total.checked_add(swap.amount_in).expect("Swap sum overflow");
+            total = total
+                .checked_add(swap.amount_in)
+                .expect("Swap sum overflow");
         }
         for i in 0..sells.len() {
             let swap = sells.get_unchecked(i);
-            total = total.checked_add(swap.amount_in).expect("Swap sum overflow");
+            total = total
+                .checked_add(swap.amount_in)
+                .expect("Swap sum overflow");
         }
         total
     }
@@ -1244,5 +1348,3 @@ impl PortfolioManager {
         x
     }
 }
-
-

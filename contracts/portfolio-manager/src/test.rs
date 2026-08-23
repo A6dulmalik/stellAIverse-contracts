@@ -1,5 +1,5 @@
-use crate::types::*;
 use crate::contract::{PortfolioManager, PortfolioManagerClient};
+use crate::types::*;
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
@@ -635,13 +635,7 @@ fn check_and_rebalance_drift_triggered() {
     let new_balances = Vec::from_array(&env, [7_000, 2_000, 1_000]); // 70%, 20%, 10%
     let empty_swaps: Vec<SwapRecord> = Vec::new(&env);
 
-    let result = pm.check_and_rebalance(
-        &admin,
-        &id,
-        &new_balances,
-        &empty_swaps,
-        &empty_swaps,
-    );
+    let result = pm.check_and_rebalance(&admin, &id, &new_balances, &empty_swaps, &empty_swaps);
 
     assert!(result.is_some());
     let record = result.unwrap();
@@ -659,13 +653,7 @@ fn check_and_rebalance_no_action_when_within_tolerance() {
     let new_balances = Vec::from_array(&env, [4_100, 3_400, 2_500]); // 41%, 34%, 25%
     let empty_swaps: Vec<SwapRecord> = Vec::new(&env);
 
-    let result = pm.check_and_rebalance(
-        &admin,
-        &id,
-        &new_balances,
-        &empty_swaps,
-        &empty_swaps,
-    );
+    let result = pm.check_and_rebalance(&admin, &id, &new_balances, &empty_swaps, &empty_swaps);
 
     assert!(result.is_none());
 }
