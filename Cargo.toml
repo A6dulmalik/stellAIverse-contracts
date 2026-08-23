@@ -15,6 +15,7 @@ members = [
     "contracts/token-vesting",
     "contracts/vault",
     "contracts/portfolio-manager",
+    "contracts/prediction-markets",
     "lib",
     "shared",
 ]
