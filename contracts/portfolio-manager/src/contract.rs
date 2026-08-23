@@ -373,7 +373,7 @@ impl PortfolioManager {
         // Update asset positions with new balances
         let mut total_new_value: i128 = 0;
         for i in 0..asset_count {
-            let mut pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
             let new_balance = new_asset_balances.get_unchecked(i);
 
             // Calculate value change
@@ -388,7 +388,7 @@ impl PortfolioManager {
                 0
             };
 
-            Storage::set_asset_position(&env, portfolio_id, i as u32, &pos);
+            Storage::set_asset_position(&env, portfolio_id, i, &pos);
             total_new_value = total_new_value
                 .checked_add(new_value)
                 .expect("Value overflow");
@@ -557,14 +557,14 @@ impl PortfolioManager {
             let (token, amount) = dividend_amounts.get_unchecked(i);
             // Find the asset and add to its position
             for j in 0..portfolio.target_weights.len() {
-                let pos = Storage::get_asset_position(&env, portfolio_id, j as u32);
+                let pos = Storage::get_asset_position(&env, portfolio_id, j);
                 if pos.token == token {
                     let mut updated_pos = pos;
                     updated_pos.balance = updated_pos
                         .balance
                         .checked_add(amount)
                         .expect("Balance overflow");
-                    Storage::set_asset_position(&env, portfolio_id, j as u32, &updated_pos);
+                    Storage::set_asset_position(&env, portfolio_id, j, &updated_pos);
                     total_dividend = total_dividend
                         .checked_add(amount)
                         .expect("Dividend overflow");
@@ -932,7 +932,7 @@ impl PortfolioManager {
         // Update target weights and current weights
         for i in 0..new_count {
             let new_weight = new_weights.get_unchecked(i);
-            let mut pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
             pos.target_weight_bps = new_weight.weight_bps;
 
             // Recalculate current weight
@@ -942,7 +942,7 @@ impl PortfolioManager {
                     (asset_value * BPS_DENOMINATOR / portfolio.total_assets) as u32;
             }
 
-            Storage::set_asset_position(&env, portfolio_id, i as u32, &pos);
+            Storage::set_asset_position(&env, portfolio_id, i, &pos);
         }
 
         portfolio.target_weights = new_weights;
@@ -1079,10 +1079,10 @@ impl PortfolioManager {
         let mut drifts = Vec::new(&env);
 
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(&env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(&env, portfolio_id, i);
             let target = pos.target_weight_bps as i32;
             let current = pos.current_weight_bps as i32;
-            let drift = (target - current).unsigned_abs() as u32;
+            let drift = (target - current).unsigned_abs();
             drifts.push_back(drift);
         }
 
@@ -1094,7 +1094,7 @@ impl PortfolioManager {
         let portfolio = Storage::get_portfolio(&env, portfolio_id);
         let mut positions = Vec::new(&env);
         for i in 0..portfolio.target_weights.len() {
-            positions.push_back(Storage::get_asset_position(&env, portfolio_id, i as u32));
+            positions.push_back(Storage::get_asset_position(&env, portfolio_id, i));
         }
         positions
     }
@@ -1192,7 +1192,7 @@ impl PortfolioManager {
                 last_price: PRECISION_FACTOR, // Default 1:1
                 last_price_update: now,
             };
-            Storage::set_asset_position(env, portfolio_id, i as u32, &pos);
+            Storage::set_asset_position(env, portfolio_id, i, &pos);
         }
 
         // Initialize performance accumulator
@@ -1214,7 +1214,7 @@ impl PortfolioManager {
                 portfolio_id,
                 creator.clone(),
                 name.clone(),
-                allocations.len() as u32,
+                allocations.len(),
             ),
         );
 
@@ -1265,7 +1265,7 @@ impl PortfolioManager {
 
         // First pass: compute total value with new balances
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(env, portfolio_id, i);
             let balance = new_balances.get_unchecked(i);
             let value = balance * pos.last_price / PRECISION_FACTOR;
             total_value = total_value.checked_add(value).expect("Value overflow");
@@ -1277,12 +1277,12 @@ impl PortfolioManager {
 
         // Second pass: compute drift per asset
         for i in 0..portfolio.target_weights.len() {
-            let pos = Storage::get_asset_position(env, portfolio_id, i as u32);
+            let pos = Storage::get_asset_position(env, portfolio_id, i);
             let balance = new_balances.get_unchecked(i);
             let value = balance * pos.last_price / PRECISION_FACTOR;
             let current_weight = (value * BPS_DENOMINATOR / total_value) as i32;
             let target_weight = pos.target_weight_bps as i32;
-            let drift = (target_weight - current_weight).unsigned_abs() as u32;
+            let drift = (target_weight - current_weight).unsigned_abs();
             if drift > max_drift {
                 max_drift = drift;
             }

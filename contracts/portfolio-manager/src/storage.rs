@@ -266,7 +266,7 @@ impl Storage {
         env.storage()
             .instance()
             .get(&DataKey::PerformanceAccumulator(portfolio_id))
-            .unwrap_or_else(|| PerformanceAccumulator {
+            .unwrap_or(PerformanceAccumulator {
                 portfolio_id,
                 return_sum: 0,
                 return_squared_sum: 0,
