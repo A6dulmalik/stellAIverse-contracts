@@ -13,7 +13,7 @@ pub enum DataKey {
     Paused,
     PortfolioCounter,
     Portfolio(u64),
-    AssetPosition(u64, u32), // (portfolio_id, asset_index)
+    AssetPosition(u64, u32),    // (portfolio_id, asset_index)
     UserPosition(Address, u64), // (user, portfolio_id)
     UserPortfolioIds(Address),
     RebalanceCounter(u64),     // per-portfolio
@@ -70,7 +70,9 @@ impl Storage {
             .get(&DataKey::PortfolioCounter)
             .unwrap_or(0);
         let next = current + 1;
-        env.storage().instance().set(&DataKey::PortfolioCounter, &next);
+        env.storage()
+            .instance()
+            .set(&DataKey::PortfolioCounter, &next);
         next
     }
 
@@ -167,7 +169,11 @@ impl Storage {
         next
     }
 
-    pub fn get_rebalance_record(env: &Env, portfolio_id: u64, rebalance_id: u64) -> RebalanceRecord {
+    pub fn get_rebalance_record(
+        env: &Env,
+        portfolio_id: u64,
+        rebalance_id: u64,
+    ) -> RebalanceRecord {
         env.storage()
             .instance()
             .get(&DataKey::RebalanceRecord(portfolio_id, rebalance_id))
@@ -238,7 +244,11 @@ impl Storage {
         next
     }
 
-    pub fn get_performance_snapshot(env: &Env, portfolio_id: u64, snapshot_id: u64) -> PerformanceSnapshot {
+    pub fn get_performance_snapshot(
+        env: &Env,
+        portfolio_id: u64,
+        snapshot_id: u64,
+    ) -> PerformanceSnapshot {
         env.storage()
             .instance()
             .get(&DataKey::PerformanceSnapshot(portfolio_id, snapshot_id))
@@ -252,10 +262,7 @@ impl Storage {
         );
     }
 
-    pub fn get_performance_accumulator(
-        env: &Env,
-        portfolio_id: u64,
-    ) -> PerformanceAccumulator {
+    pub fn get_performance_accumulator(env: &Env, portfolio_id: u64) -> PerformanceAccumulator {
         env.storage()
             .instance()
             .get(&DataKey::PerformanceAccumulator(portfolio_id))
