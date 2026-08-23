@@ -556,10 +556,14 @@ impl PortfolioManager {
         for i in 0..dividend_amounts.len() {
             let (token, amount) = dividend_amounts.get_unchecked(i);
             // Find the asset and add to its position
-            for j in 0..portfolio.target_weights.len() {let pos = Storage::get_asset_position(&env, portfolio_id, j);
+            for j in 0..portfolio.target_weights.len() {
+                let pos = Storage::get_asset_position(&env, portfolio_id, j);
                 if pos.token == token {
                     let mut updated_pos = pos;
-                    updated_pos.balance = updated_pos.balance.checked_add(amount).expect("Balance overflow");
+                    updated_pos.balance = updated_pos
+                        .balance
+                        .checked_add(amount)
+                        .expect("Balance overflow");
                     Storage::set_asset_position(&env, portfolio_id, j, &updated_pos);
                     total_dividend = total_dividend
                         .checked_add(amount)
@@ -927,13 +931,15 @@ impl PortfolioManager {
 
         // Update target weights and current weights
         for i in 0..new_count {
-            let new_weight = new_weights.get_unchecked(i);let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
+            let new_weight = new_weights.get_unchecked(i);
+            let mut pos = Storage::get_asset_position(&env, portfolio_id, i);
             pos.target_weight_bps = new_weight.weight_bps;
 
             // Recalculate current weight
             if portfolio.total_assets > 0 {
                 let asset_value = pos.balance * pos.last_price / PRECISION_FACTOR;
-                pos.current_weight_bps = (asset_value * BPS_DENOMINATOR / portfolio.total_assets) as u32;
+                pos.current_weight_bps =
+                    (asset_value * BPS_DENOMINATOR / portfolio.total_assets) as u32;
             }
 
             Storage::set_asset_position(&env, portfolio_id, i, &pos);

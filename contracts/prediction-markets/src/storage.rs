@@ -53,6 +53,7 @@ pub fn set_default_oracle(env: &Env, oracle: &Address) {
         .set(&DataKey::OracleAddress, oracle);
 }
 
+#[allow(dead_code)]
 pub fn get_fee_share_bps(env: &Env) -> i128 {
     env.storage()
         .instance()
@@ -86,6 +87,7 @@ pub fn set_market(env: &Env, market: &PredictionMarketV2) {
         .set(&DataKey::Market(market.market_id), market);
 }
 
+#[allow(dead_code)]
 pub fn require_market(env: &Env, market_id: u64) -> PredictionMarketV2 {
     get_market(env, market_id).expect("Market not found")
 }
@@ -104,6 +106,7 @@ pub fn set_outcome_pool(env: &Env, market_id: u64, outcome_index: u32, pool: &Ou
         .set(&DataKey::OutcomePool(market_id, outcome_index), pool);
 }
 
+#[allow(dead_code)]
 pub fn require_outcome_pool(env: &Env, market_id: u64, outcome_index: u32) -> OutcomePool {
     get_outcome_pool(env, market_id, outcome_index).expect("Outcome pool not found")
 }
@@ -191,6 +194,7 @@ pub fn set_lp_total_supply(env: &Env, market_id: u64, supply: i128) {
         .set(&DataKey::LpTotalSupply(market_id), &supply);
 }
 
+#[allow(dead_code)]
 pub fn get_lp_reward_accumulator(env: &Env, market_id: u64) -> i128 {
     env.storage()
         .persistent()
@@ -198,6 +202,7 @@ pub fn get_lp_reward_accumulator(env: &Env, market_id: u64) -> i128 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 pub fn set_lp_reward_accumulator(env: &Env, market_id: u64, accumulator: i128) {
     env.storage()
         .persistent()
@@ -316,18 +321,21 @@ pub fn set_total_outcome_supply(env: &Env, market_id: u64, outcome_index: u32, s
 
 // ── Oracle Cache ────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn get_oracle_result_cache(env: &Env, market_id: u64) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&DataKey::OracleResultCache(market_id))
 }
 
+#[allow(dead_code)]
 pub fn set_oracle_result_cache(env: &Env, market_id: u64, outcome: u32) {
     env.storage()
         .persistent()
         .set(&DataKey::OracleResultCache(market_id), &outcome);
 }
 
+#[allow(dead_code)]
 pub fn clear_oracle_result_cache(env: &Env, market_id: u64) {
     env.storage()
         .persistent()

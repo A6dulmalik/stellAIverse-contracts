@@ -9,6 +9,7 @@ pub const MAX_OUTCOMES: usize = 10;
 pub const DECIMAL_FACTOR: i128 = 1_000_000_000_000_000_000;
 
 /// Basis points denominator (100%).
+#[allow(dead_code)]
 pub const BPS_DENOMINATOR: i128 = 10_000;
 
 // ── Enums ───────────────────────────────────────────────────────────────────

@@ -49,7 +49,7 @@ struct TestContext {
     env: Env,
     admin: Address,
     oracle: Address,
-    pm_id: Address,
+    _pm_id: Address,
     pm: PredictionMarketClient<'static>,
     collateral: Address,
     user1: Address,
@@ -64,8 +64,8 @@ fn setup() -> TestContext {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
 
-    let pm_id = env.register(PredictionMarket, ());
-    let pm = PredictionMarketClient::new(&env, &pm_id);
+    let _pm_id = env.register(PredictionMarket, ());
+    let pm = PredictionMarketClient::new(&env, &_pm_id);
 
     let collateral = env.register(MockToken, ());
 
@@ -79,7 +79,7 @@ fn setup() -> TestContext {
         env,
         admin,
         oracle,
-        pm_id,
+        _pm_id,
         pm,
         collateral,
         user1,
@@ -732,7 +732,7 @@ fn test_pause_resume_trading() {
     let ctx = setup();
     ctx.pm.admin_pause_trading(&ctx.admin);
     // Verify paused: try to buy should fail
-    let market_id = create_binary_market(&ctx, 10_000);
+    let _market_id = create_binary_market(&ctx, 10_000);
     mint(&ctx, &ctx.user1, 1_000);
     // buy should fail because trading is paused — but mock_all_auths suppresses that
     // Just verify we can resume
@@ -937,9 +937,7 @@ fn test_cpmm_invariant_many_trades() {
     let final_k = pool.collateral_reserve * pool.outcome_reserve;
     assert!(
         final_k >= initial_k,
-        "CPMM invariant violated: final_k={} < initial_k={}",
-        final_k,
-        initial_k
+        "CPMM invariant violated: final_k={final_k} < initial_k={initial_k}",
     );
 }
 
@@ -964,9 +962,7 @@ fn test_cpmm_invariant_alternating_trades() {
     let final_k = pool.collateral_reserve * pool.outcome_reserve;
     assert!(
         final_k >= initial_k,
-        "CPMM invariant violated: final_k={} < initial_k={}",
-        final_k,
-        initial_k
+        "CPMM invariant violated: final_k={final_k} < initial_k={initial_k}",
     );
 }
 

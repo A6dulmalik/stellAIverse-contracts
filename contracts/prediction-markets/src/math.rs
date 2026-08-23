@@ -18,6 +18,7 @@ pub fn isqrt(n: i128) -> i128 {
 }
 
 /// Ceiling division for positive numbers.
+#[allow(dead_code)]
 pub fn ceil_div(a: i128, b: i128) -> i128 {
     if b <= 0 {
         panic!("Divisor must be positive");
@@ -84,6 +85,7 @@ pub fn calculate_sell_amount(
 
 /// Compute the collateral required to buy a desired `outcome_amount`.
 /// Reverse of calculate_buy_amount (rounds up to ensure sufficient collateral).
+#[allow(dead_code)]
 pub fn calculate_buy_collateral_required(
     outcome_amount: i128,
     collateral_reserve: i128,
@@ -141,6 +143,7 @@ pub fn get_outcome_price(collateral_reserve: i128, outcome_reserve: i128) -> i12
 }
 
 /// Check that x * y = k invariant holds (approximately, allowing for fee accumulation).
+#[allow(dead_code)]
 pub fn check_cpmm_invariant(old_k: i128, new_collateral: i128, new_outcome: i128) -> bool {
     let new_k = new_collateral * new_outcome;
     // k should increase or stay the same (fees accumulate in pool)
@@ -263,9 +266,7 @@ mod tests {
         let new_k = new_x * new_y;
         assert!(
             new_k >= old_k,
-            "CPMM invariant violated: new_k={} < old_k={}",
-            new_k,
-            old_k
+            "CPMM invariant violated: new_k={new_k} < old_k={old_k}",
         );
     }
 
@@ -288,9 +289,7 @@ mod tests {
 
         assert!(
             new_k >= old_k,
-            "CPMM invariant violated: new_k={} < old_k={}",
-            new_k,
-            old_k
+            "CPMM invariant violated: new_k={new_k} < old_k={old_k}",
         );
     }
 
