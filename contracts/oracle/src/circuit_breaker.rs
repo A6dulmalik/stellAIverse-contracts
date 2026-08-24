@@ -1,14 +1,13 @@
-use soroban_sdk::{Env};
-use crate::types::{CircuitBreakerState, PriceFeed};
-use crate::errors::*;
 use crate::storage_keys::*;
+use crate::types::{CircuitBreakerState, PriceFeed};
+use soroban_sdk::Env;
 
 pub struct CircuitBreaker;
 
 impl CircuitBreaker {
     /// Check if a new price would trigger the circuit breaker
     pub fn check_price_movement(
-        env: &Env,
+        _env: &Env,
         feed: &PriceFeed,
         new_price: i128,
         previous_price: i128,
@@ -27,7 +26,7 @@ impl CircuitBreaker {
         let change_bps = (price_diff * 10000) / previous_price;
 
         // Check if change exceeds maximum allowed
-        if change_bps > feed.max_price_change_bps {
+        if change_bps > feed.max_price_change_bps as i128 {
             return (true, change_bps as u32);
         }
 
@@ -43,7 +42,7 @@ impl CircuitBreaker {
         change_bps: u32,
         cooldown_period: u64,
     ) {
-        let cb_key = get_circuit_breaker_key(env, feed_id);
+        let cb_key = get_circuit_breaker_key(feed_id);
         let current_time = env.ledger().timestamp();
 
         let cb_state = CircuitBreakerState {
@@ -60,15 +59,19 @@ impl CircuitBreaker {
 
         // Emit circuit breaker triggered event
         env.events().publish(
-            (soroban_sdk::Symbol::new(env, "circuit_breaker"), feed_id.clone()),
+            (
+                soroban_sdk::Symbol::new(env, "circuit_breaker"),
+                feed_id.clone(),
+            ),
             (new_price, previous_price, change_bps, current_time),
         );
     }
 
     /// Check if circuit breaker is currently active
     pub fn is_triggered(env: &Env, feed_id: &soroban_sdk::Symbol) -> bool {
-        let cb_key = get_circuit_breaker_key(env, feed_id);
-        if let Some(cb_state): Option<CircuitBreakerState> = env.storage().instance().get(&cb_key) {
+        let cb_key = get_circuit_breaker_key(feed_id);
+        let stored: Option<CircuitBreakerState> = env.storage().instance().get(&cb_key);
+        if let Some(cb_state) = stored {
             if cb_state.triggered {
                 let current_time = env.ledger().timestamp();
                 if let Some(can_resume_at) = cb_state.can_resume_at {
@@ -88,7 +91,7 @@ impl CircuitBreaker {
 
     /// Reset the circuit breaker
     pub fn reset(env: &Env, feed_id: &soroban_sdk::Symbol) {
-        let cb_key = get_circuit_breaker_key(env, feed_id);
+        let cb_key = get_circuit_breaker_key(feed_id);
         let cb_state = CircuitBreakerState {
             triggered: false,
             triggered_at: None,
@@ -116,13 +119,13 @@ impl CircuitBreaker {
 
     /// Get current circuit breaker state
     pub fn get_state(env: &Env, feed_id: &soroban_sdk::Symbol) -> Option<CircuitBreakerState> {
-        let cb_key = get_circuit_breaker_key(env, feed_id);
+        let cb_key = get_circuit_breaker_key(feed_id);
         env.storage().instance().get(&cb_key)
     }
 
     /// Initialize circuit breaker for a new feed
     pub fn initialize(env: &Env, feed_id: &soroban_sdk::Symbol, cooldown_period: u64) {
-        let cb_key = get_circuit_breaker_key(env, feed_id);
+        let cb_key = get_circuit_breaker_key(feed_id);
         let cb_state = CircuitBreakerState {
             triggered: false,
             triggered_at: None,
