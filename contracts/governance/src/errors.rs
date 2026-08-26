@@ -26,4 +26,9 @@ pub enum GovernanceError {
     InsufficientBalance = 20,
     TimelockAlreadyQueued = 21,
     ProposalNotQueued = 22,
+    LockAlreadyExists = 23,
+    LockNotExpired = 24,
+    NoLockFound = 25,
+    LockAmountZero = 26,
+    InvalidLockDuration = 27,
 }
