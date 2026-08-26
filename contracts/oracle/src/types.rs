@@ -1,5 +1,4 @@
-use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
-use stellai_lib::types::OracleData;
+use soroban_sdk::{contracttype, Address, String, Symbol, Vec};
 
 /// Supported oracle providers
 #[contracttype]
@@ -67,7 +66,7 @@ pub struct HistoricalPrice {
 
 /// Aggregated price result
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AggregatedPrice {
     pub price: i128,
     pub timestamp: u64,
@@ -111,7 +110,7 @@ pub struct FeedSubscription {
     pub expires_at: u64,
     pub queries_remaining: u32,
     pub auto_renew: bool,
-    pub created_at: u64
+    pub created_at: u64,
 }
 
 /// Subscription tier
@@ -162,7 +161,7 @@ pub struct CustomDataFeed {
 
 /// Custom data entry
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CustomDataEntry {
     pub data: String,
     pub timestamp: u64,

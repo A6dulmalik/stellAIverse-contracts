@@ -1,94 +1,132 @@
-use soroban_sdk::{Symbol, Env};
+use soroban_sdk::{contracttype, Address, Symbol};
 
-// Instance storage keys
-pub const ADMIN: &str = "admin";
-pub const PROVIDER_COUNT: &str = "prov_cnt";
-pub const FEED_COUNT: &str = "feed_cnt";
-pub const TREASURY: &str = "treasury";
-pub const BASE_REWARD_RATE: &str = "base_reward";
+/// Storage keys used by the oracle contract.
+///
+/// Keys are structured enums rather than flattened strings: Soroban
+/// symbols cap at 32 bytes, which a composite key like
+/// `<prefix>_<feed>_<provider>` blows straight past once a real address is
+/// embedded, and typed variants keep every lookup collision-free by
+/// construction instead of by naming discipline.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StorageKey {
+    // Instance configuration
+    Admin,
+    Treasury,
+    ProviderCount,
+    FeedCount,
+    DistributionCount,
+    BaseRewardRate,
 
-// Prefixes for map storage
-pub const PROVIDER_PREFIX: &str = "prov_";      // provider_<address>
-pub const PRICE_FEED_PREFIX: &str = "feed_";    // feed_<feed_id>
-pub const LATEST_PRICE_PREFIX: &str = "lp_";    // lp_<feed_id>
-pub const PRICE_HISTORY_PREFIX: &str = "ph_";   // ph_<feed_id>
-pub const CB_STATE_PREFIX: &str = "cb_";        // cb_<feed_id>
-pub const FALLBACK_CFG_PREFIX: &str = "fb_";    // fb_<feed_id>
-pub const PROVIDER_HEALTH_PREFIX: &str = "phc_"; // phc_<provider>
-pub const CUSTOM_FEED_PREFIX: &str = "cf_";      // cf_<feed_id>
-pub const CUSTOM_DATA_PREFIX: &str = "cd_";      // cd_<feed_id>
-pub const SUBSCRIPTION_PREFIX: &str = "sub_";    // sub_<user>_<feed>
-pub const RATE_LIMIT_PREFIX: &str = "rl_";       // rl_<user>
-pub const INCENTIVE_BALANCE_PREFIX: &str = "ib_";// ib_<provider>
-
-// Helper to create provider storage key
-pub fn get_provider_key(env: &Env, provider: &Address) -> Symbol {
-    let key_str = format!("{}{}", PROVIDER_PREFIX, provider.to_string());
-    Symbol::new(env, &key_str)
+    // Records
+    /// An oracle provider, keyed by its address.
+    Provider(Address),
+    /// A price feed configuration, keyed by feed id.
+    PriceFeed(Symbol),
+    /// The most recent price accepted for a feed, keyed by feed id.
+    LatestPrice(Symbol),
+    /// The most recent price a specific provider submitted to a feed.
+    ///
+    /// Aggregation needs one entry per provider, while the feed-level
+    /// latest price drives update-interval and staleness checks; keeping
+    /// the two key spaces separate lets each reader cost one lookup.
+    ProviderPrice(Symbol, Address),
+    /// Historical prices for a feed, keyed by feed id.
+    PriceHistory(Symbol),
+    /// Circuit breaker state for a feed.
+    CircuitBreaker(Symbol),
+    /// Fallback provider configuration for a feed.
+    FallbackConfig(Symbol),
+    /// Health metrics for a provider.
+    ProviderHealth(Address),
+    /// A non-price data feed.
+    CustomFeed(Symbol),
+    /// Submitted entries of a custom data feed.
+    CustomData(Symbol),
+    /// A user's subscription to a feed.
+    Subscription(Address, Symbol),
+    /// Query rate-limit bookkeeping for a user.
+    RateLimit(Address),
+    /// Withdrawable incentive balance for a provider.
+    IncentiveBalance(Address),
 }
 
-// Helper to create price feed key
-pub fn get_feed_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", PRICE_FEED_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+// Key helpers. Each returns the [`StorageKey`] variant the rest of the
+// contract stores and reads through, so call sites stay short and the
+// key layout lives in exactly one place.
+
+pub fn get_admin_key() -> StorageKey {
+    StorageKey::Admin
 }
 
-// Helper to get latest price key
-pub fn get_latest_price_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", LATEST_PRICE_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_treasury_key() -> StorageKey {
+    StorageKey::Treasury
 }
 
-// Helper to get price history key
-pub fn get_price_history_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", PRICE_HISTORY_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_provider_count_key() -> StorageKey {
+    StorageKey::ProviderCount
 }
 
-// Helper to get circuit breaker state key
-pub fn get_circuit_breaker_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", CB_STATE_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_feed_count_key() -> StorageKey {
+    StorageKey::FeedCount
 }
 
-// Helper to get fallback config key
-pub fn get_fallback_config_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", FALLBACK_CFG_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_distribution_count_key() -> StorageKey {
+    StorageKey::DistributionCount
 }
 
-// Helper to get provider health key
-pub fn get_provider_health_key(env: &Env, provider: &Address) -> Symbol {
-    let key_str = format!("{}{}", PROVIDER_HEALTH_PREFIX, provider.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_base_reward_rate_key() -> StorageKey {
+    StorageKey::BaseRewardRate
 }
 
-// Helper to get custom feed key
-pub fn get_custom_feed_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", CUSTOM_FEED_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_provider_key(provider: &Address) -> StorageKey {
+    StorageKey::Provider(provider.clone())
 }
 
-// Helper to get custom data key
-pub fn get_custom_data_key(env: &Env, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("{}{}", CUSTOM_DATA_PREFIX, feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_feed_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::PriceFeed(feed_id.clone())
 }
 
-// Helper to get subscription key
-pub fn get_subscription_key(env: &Env, subscriber: &Address, feed_id: &Symbol) -> Symbol {
-    let key_str = format!("sub_{}_{}", subscriber.to_string(), feed_id.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_latest_price_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::LatestPrice(feed_id.clone())
 }
 
-// Helper to get rate limit key
-pub fn get_rate_limit_key(env: &Env, user: &Address) -> Symbol {
-    let key_str = format!("{}{}", RATE_LIMIT_PREFIX, user.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_provider_price_key(feed_id: &Symbol, provider: &Address) -> StorageKey {
+    StorageKey::ProviderPrice(feed_id.clone(), provider.clone())
 }
 
-// Helper to get incentive balance key
-pub fn get_incentive_balance_key(env: &Env, provider: &Address) -> Symbol {
-    let key_str = format!("{}{}", INCENTIVE_BALANCE_PREFIX, provider.to_string());
-    Symbol::new(env, &key_str)
+pub fn get_price_history_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::PriceHistory(feed_id.clone())
+}
+
+pub fn get_circuit_breaker_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::CircuitBreaker(feed_id.clone())
+}
+
+pub fn get_fallback_config_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::FallbackConfig(feed_id.clone())
+}
+
+pub fn get_provider_health_key(provider: &Address) -> StorageKey {
+    StorageKey::ProviderHealth(provider.clone())
+}
+
+pub fn get_custom_feed_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::CustomFeed(feed_id.clone())
+}
+
+pub fn get_custom_data_key(feed_id: &Symbol) -> StorageKey {
+    StorageKey::CustomData(feed_id.clone())
+}
+
+pub fn get_subscription_key(subscriber: &Address, feed_id: &Symbol) -> StorageKey {
+    StorageKey::Subscription(subscriber.clone(), feed_id.clone())
+}
+
+pub fn get_rate_limit_key(user: &Address) -> StorageKey {
+    StorageKey::RateLimit(user.clone())
+}
+
+pub fn get_incentive_balance_key(provider: &Address) -> StorageKey {
+    StorageKey::IncentiveBalance(provider.clone())
 }
