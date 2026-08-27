@@ -11,8 +11,8 @@
 //! authorization.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient,
-    Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, Address,
+    Env, String, Vec,
 };
 
 use access_control::{AccessControlClient, Role};
@@ -193,8 +193,7 @@ impl Escrow {
         env.storage()
             .instance()
             .set(&DataKey::Signer(signer.clone()), &true);
-        let mut list: Vec<Address> =
-            env.storage().instance().get(&DataKey::SignerList).unwrap();
+        let mut list: Vec<Address> = env.storage().instance().get(&DataKey::SignerList).unwrap();
         list.push_back(signer.clone());
         env.storage().instance().set(&DataKey::SignerList, &list);
         config.signer_count += 1;
@@ -221,8 +220,7 @@ impl Escrow {
         env.storage()
             .instance()
             .remove(&DataKey::Signer(signer.clone()));
-        let mut list: Vec<Address> =
-            env.storage().instance().get(&DataKey::SignerList).unwrap();
+        let mut list: Vec<Address> = env.storage().instance().get(&DataKey::SignerList).unwrap();
         let idx = Self::index_of(&list, &signer);
         list.remove(idx);
         env.storage().instance().set(&DataKey::SignerList, &list);
@@ -278,7 +276,8 @@ impl Escrow {
         config.rate_limit_window = window;
         config.rate_limit_max = max;
         env.storage().instance().set(&DataKey::Config, &config);
-        env.events().publish((symbol_short!("esc_rate"),), (window, max));
+        env.events()
+            .publish((symbol_short!("esc_rate"),), (window, max));
         Ok(())
     }
 
@@ -296,7 +295,8 @@ impl Escrow {
         Self::require_admin(&env, &config, &caller)?;
         config.paused = false;
         env.storage().instance().set(&DataKey::Config, &config);
-        env.events().publish((symbol_short!("esc_pause"),), (false,));
+        env.events()
+            .publish((symbol_short!("esc_pause"),), (false,));
         Ok(())
     }
 
@@ -337,11 +337,11 @@ impl Escrow {
         env.storage()
             .instance()
             .set(&DataKey::EscrowBalance(id), &0i128);
-        env.storage().instance().set(&DataKey::NextEscrowId, &(id + 1));
-        env.events().publish(
-            (symbol_short!("esc_new"),),
-            (creator, id, record.is_native),
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::NextEscrowId, &(id + 1));
+        env.events()
+            .publish((symbol_short!("esc_new"),), (creator, id, record.is_native));
         Ok(id)
     }
 
@@ -362,12 +362,15 @@ impl Escrow {
         if !record.active {
             return Err(EscrowError::InactiveEscrow);
         }
-        if record.is_native {
-            let balance = Self::escrow_balance_raw(&env, escrow_id);
-            env.storage()
-                .instance()
-                .set(&DataKey::EscrowBalance(escrow_id), &(balance + amount));
-        } else {
+        // Credit the internal ledger for both native and token escrows so
+        // `escrow_balance` and the withdrawal-path balance checks stay
+        // consistent regardless of asset type; only token escrows also move
+        // real tokens into the contract.
+        let balance = Self::escrow_balance_raw(&env, escrow_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowBalance(escrow_id), &(balance + amount));
+        if !record.is_native {
             let wallet = env.current_contract_address();
             TokenClient::new(&env, &record.token).transfer(&from, &wallet, &amount);
         }
@@ -407,7 +410,11 @@ impl Escrow {
         if Self::escrow_balance_raw(&env, escrow_id) < amount {
             return Err(EscrowError::InsufficientBalance);
         }
-        let tx_id: u64 = env.storage().instance().get(&DataKey::NextTxId).unwrap_or(1);
+        let tx_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextTxId)
+            .unwrap_or(1);
         let now = env.ledger().timestamp();
         let mut approvers = Vec::new(&env);
         approvers.push_back(submitter.clone());
@@ -426,11 +433,11 @@ impl Escrow {
         env.storage()
             .instance()
             .set(&DataKey::Transaction(tx_id), &tx);
-        env.storage().instance().set(&DataKey::NextTxId, &(tx_id + 1));
-        env.events().publish(
-            (symbol_short!("esc_queue"),),
-            (tx_id, escrow_id, tx.amount),
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::NextTxId, &(tx_id + 1));
+        env.events()
+            .publish((symbol_short!("esc_queue"),), (tx_id, escrow_id, tx.amount));
         Ok(tx_id)
     }
 
@@ -523,11 +530,14 @@ impl Escrow {
         if balance < tx.amount {
             return Err(EscrowError::InsufficientBalance);
         }
-        if record.is_native {
-            env.storage()
-                .instance()
-                .set(&DataKey::EscrowBalance(tx.escrow_id), &(balance - tx.amount));
-        } else {
+        // Debit the internal ledger for both native and token escrows
+        // (mirrors the credit in `deposit`); only token escrows also move
+        // real tokens out of the contract.
+        env.storage().instance().set(
+            &DataKey::EscrowBalance(tx.escrow_id),
+            &(balance - tx.amount),
+        );
+        if !record.is_native {
             TokenClient::new(&env, &record.token).transfer(
                 &env.current_contract_address(),
                 &tx.recipient,
@@ -543,11 +553,16 @@ impl Escrow {
 
         let cutoff = now.saturating_sub(config.rate_limit_window);
 
-        let mut global: Vec<u64> =
-            env.storage().instance().get(&DataKey::GlobalExecutions).unwrap();
+        let mut global: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::GlobalExecutions)
+            .unwrap();
         global.push_back(now);
         Self::prune_window(&mut global, cutoff);
-        env.storage().instance().set(&DataKey::GlobalExecutions, &global);
+        env.storage()
+            .instance()
+            .set(&DataKey::GlobalExecutions, &global);
 
         let recipient = tx.recipient.clone();
         let mut per_recipient: Vec<u64> = env
@@ -584,8 +599,7 @@ impl Escrow {
         let is_admin = Self::is_admin(&env, &config, &caller);
         let is_submitter = caller == tx.submitter;
         let unlock_at = tx.queued_at.saturating_add(config.timelock_delay);
-        let grace_lapsed = env.ledger().timestamp()
-            > unlock_at.saturating_add(config.grace_period);
+        let grace_lapsed = env.ledger().timestamp() > unlock_at.saturating_add(config.grace_period);
         if !is_admin && !is_submitter && !grace_lapsed {
             return Err(EscrowError::Unauthorized);
         }
@@ -593,7 +607,8 @@ impl Escrow {
         env.storage()
             .instance()
             .set(&DataKey::Transaction(tx_id), &tx);
-        env.events().publish((symbol_short!("esc_cxl"),), (tx_id, caller));
+        env.events()
+            .publish((symbol_short!("esc_cxl"),), (tx_id, caller));
         Ok(())
     }
 
@@ -607,7 +622,8 @@ impl Escrow {
         env.storage()
             .instance()
             .set(&DataKey::Escrow(escrow_id), &record);
-        env.events().publish((symbol_short!("esc_close"),), (escrow_id,));
+        env.events()
+            .publish((symbol_short!("esc_close"),), (escrow_id,));
         Ok(())
     }
 
@@ -724,8 +740,11 @@ impl Escrow {
     ) -> Result<(), EscrowError> {
         let now = env.ledger().timestamp();
         let cutoff = now.saturating_sub(config.rate_limit_window);
-        let global: Vec<u64> =
-            env.storage().instance().get(&DataKey::GlobalExecutions).unwrap();
+        let global: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::GlobalExecutions)
+            .unwrap();
         if Self::count_in_window(&global, cutoff) >= config.rate_limit_max {
             return Err(EscrowError::RateLimited);
         }

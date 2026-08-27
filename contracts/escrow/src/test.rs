@@ -84,8 +84,7 @@ fn setup() -> Setup<'static> {
 fn setup_with(ac: Option<Address>) -> Setup<'static> {
     let s = setup_raw(ac, false);
     // Token escrow pre-funded.
-    MockTokenClient::new(&s.env, &s.token_client.address)
-        .mint(&s.signers.get_unchecked(0), &1_000);
+    MockTokenClient::new(&s.env, &s.token_client.address).mint(&s.signers.get_unchecked(0), &1_000);
     s.client
         .deposit(&s.escrow_id, &s.signers.get_unchecked(0), &1_000);
     assert_eq!(s.client.escrow_balance(&s.escrow_id), 1_000);
@@ -162,16 +161,7 @@ fn initialize_sets_config_and_rejects_duplicates() {
 
     // Duplicate initialization is rejected.
     let err = client
-        .try_initialize(
-            &admin,
-            &None,
-            &signers,
-            &2,
-            &50,
-            &500,
-            &HOUR,
-            &3u32,
-        )
+        .try_initialize(&admin, &None, &signers, &2, &50, &500, &HOUR, &3u32)
         .unwrap_err();
     assert_eq!(err.unwrap(), EscrowError::AlreadyInitialized);
 }
@@ -192,14 +182,16 @@ fn initialize_validates_parameters() {
     assert_eq!(
         client
             .try_initialize(&admin, &None, &signers, &4, &50, &500, &HOUR, &1u32)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     // Zero threshold.
     assert_eq!(
         client
             .try_initialize(&admin, &None, &signers, &0, &50, &500, &HOUR, &1u32)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     // Duplicate signers.
@@ -207,21 +199,24 @@ fn initialize_validates_parameters() {
     assert_eq!(
         client
             .try_initialize(&admin, &None, &dupes, &1, &50, &500, &HOUR, &1u32)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     // Zero grace period.
     assert_eq!(
         client
             .try_initialize(&admin, &None, &signers, &2, &50, &0, &HOUR, &1u32)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     // Zero rate limit window.
     assert_eq!(
         client
             .try_initialize(&admin, &None, &signers, &2, &50, &500, &0, &1u32)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
 }
@@ -232,19 +227,26 @@ fn deposit_moves_tokens_and_tracks_balance() {
     let depositor = s.signers.get_unchecked(0);
 
     let before_depositor = s.token_client.balance(&depositor);
-    let before_wallet = s.token_client.balance(&s.client.env.current_contract_address());
+    let before_wallet = s.token_client.balance(&s.client.address);
     assert_eq!(before_wallet, 1_000); // from initial setup deposit
 
     MockTokenClient::new(&s.env, &s.token_client.address).mint(&depositor, &400);
     s.client.deposit(&s.escrow_id, &depositor, &400);
     assert_eq!(s.client.escrow_balance(&s.escrow_id), 1_400);
-    assert_eq!(s.token_client.balance(&depositor), before_depositor - 400);
+    // Minted 400 then deposited the same 400 away, so the depositor's
+    // token balance nets back to what it was before this test's mint.
+    assert_eq!(s.token_client.balance(&depositor), before_depositor);
+    assert_eq!(
+        s.token_client.balance(&s.client.address),
+        before_wallet + 400
+    );
 
     // Zero / negative deposits rejected.
     assert_eq!(
         s.client
             .try_deposit(&s.escrow_id, &depositor, &0)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     // Unknown escrow rejected.
@@ -252,7 +254,8 @@ fn deposit_moves_tokens_and_tracks_balance() {
     assert_eq!(
         s.client
             .try_deposit(&99, &unknown, &5)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::NotFound
     );
 }
@@ -274,7 +277,8 @@ fn submit_requires_signer_or_admin_and_funded_escrow() {
     assert_eq!(
         s.client
             .try_submit_transaction(&outsider, &s.escrow_id, &recipient, &10)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
 
@@ -283,7 +287,8 @@ fn submit_requires_signer_or_admin_and_funded_escrow() {
     assert_eq!(
         s.client
             .try_submit_transaction(&submitter, &s.escrow_id, &recipient, &(1_001))
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InsufficientBalance
     );
 
@@ -295,7 +300,8 @@ fn submit_requires_signer_or_admin_and_funded_escrow() {
     assert_eq!(
         s.client
             .try_submit_transaction(&submitter, &s.escrow_id, &recipient, &0)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
 }
@@ -316,7 +322,8 @@ fn approvals_enforce_m_of_n() {
     assert_eq!(
         s.client
             .try_approve_transaction(&second, &tx_id)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::AlreadyApproved
     );
 
@@ -325,7 +332,8 @@ fn approvals_enforce_m_of_n() {
     assert_eq!(
         s.client
             .try_approve_transaction(&outsider, &tx_id)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::NotASigner
     );
 
@@ -333,7 +341,10 @@ fn approvals_enforce_m_of_n() {
     s.client.revoke_approval(&second, &tx_id);
     assert_eq!(s.client.get_transaction(&tx_id).unwrap().approvers.len(), 1);
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::NotApproved
     );
 
@@ -341,7 +352,8 @@ fn approvals_enforce_m_of_n() {
     assert_eq!(
         s.client
             .try_revoke_approval(&second, &tx_id)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::NotApproved
     );
 }
@@ -354,13 +366,19 @@ fn timelock_blocks_then_execution_releases_funds() {
 
     // Still time-locked right after queueing.
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::TimeLocked
     );
 
     s.env.ledger().with_mut(|l| l.timestamp += DELAY - 1);
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::TimeLocked
     );
 
@@ -368,7 +386,7 @@ fn timelock_blocks_then_execution_releases_funds() {
     s.env.ledger().with_mut(|l| l.timestamp += 1);
     s.client.execute_transaction(&tx_id);
 
-    let wallet = s.client.env.current_contract_address();
+    let wallet = s.client.address.clone();
     assert_eq!(s.token_client.balance(&recipient), 300);
     assert_eq!(s.token_client.balance(&wallet), 700);
     assert_eq!(s.client.escrow_balance(&s.escrow_id), 700);
@@ -379,7 +397,10 @@ fn timelock_blocks_then_execution_releases_funds() {
 
     // Re-execution rejected.
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::AlreadyExecuted
     );
 }
@@ -396,7 +417,10 @@ fn grace_period_expiry_blocks_execution_and_allows_anyone_to_cancel() {
         .with_mut(|l| l.timestamp += DELAY + GRACE + 1);
 
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::GraceExpired
     );
 
@@ -409,7 +433,8 @@ fn grace_period_expiry_blocks_execution_and_allows_anyone_to_cancel() {
     assert_eq!(
         s.client
             .try_cancel_transaction(&stranger, &tx_id)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::AlreadyCancelled
     );
 }
@@ -424,9 +449,7 @@ fn cancel_permissions_inside_grace_period() {
     let tx_admin = queue_approved(&s, &r1, 10);
     let tx_submitter = {
         let second = s.signers.get_unchecked(1);
-        let tx = s
-            .client
-            .submit_transaction(&second, &s.escrow_id, &r2, &20);
+        let tx = s.client.submit_transaction(&second, &s.escrow_id, &r2, &20);
         s.client
             .approve_transaction(&s.signers.get_unchecked(0), &tx);
         tx
@@ -436,26 +459,19 @@ fn cancel_permissions_inside_grace_period() {
     assert_eq!(
         s.client
             .try_cancel_transaction(&stranger, &tx_admin)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
 
     // Admin cancels their own queued transaction.
     s.client.cancel_transaction(&s.admin, &tx_admin);
-    assert!(s
-        .client
-        .get_transaction(&tx_admin)
-        .unwrap()
-        .cancelled);
+    assert!(s.client.get_transaction(&tx_admin).unwrap().cancelled);
 
     // Submitter cancels their own queued transaction.
     let submitter = s.signers.get_unchecked(1);
     s.client.cancel_transaction(&submitter, &tx_submitter);
-    assert!(s
-        .client
-        .get_transaction(&tx_submitter)
-        .unwrap()
-        .cancelled);
+    assert!(s.client.get_transaction(&tx_submitter).unwrap().cancelled);
 }
 
 #[test]
@@ -484,15 +500,29 @@ fn rate_limits_block_rapid_cascading_executions() {
     // A different recipient also hits the global cap.
     let other = Address::generate(&s.env);
     let t4 = queue_approved(&s, &other, 10);
+    s.env.ledger().with_mut(|l| l.timestamp += DELAY);
     assert_eq!(
         s.client.try_execute_transaction(&t4).unwrap_err().unwrap(),
         EscrowError::RateLimited
     );
 
-    // After the sliding window passes, execution works again.
+    // After the rate-limit window passes, execution works again for a
+    // freshly queued transaction. `t3` itself cannot be retried here: its
+    // own grace window (1_000s) is shorter than the rate-limit window
+    // (1 hour) it was blocked by, so by the time the rate limit clears it
+    // has independently fallen outside its grace period and can only be
+    // cancelled (garbage-collected), not executed.
     s.env.ledger().with_mut(|l| l.timestamp += HOUR);
-    s.client.execute_transaction(&t3);
-    assert!(s.client.get_transaction(&t3).unwrap().executed);
+    assert_eq!(
+        s.client.try_execute_transaction(&t3).unwrap_err().unwrap(),
+        EscrowError::GraceExpired
+    );
+    s.client.cancel_transaction(&s.admin, &t3);
+
+    let t5 = queue_approved(&s, &recipient, 10);
+    s.env.ledger().with_mut(|l| l.timestamp += DELAY);
+    s.client.execute_transaction(&t5);
+    assert!(s.client.get_transaction(&t5).unwrap().executed);
 }
 
 #[test]
@@ -512,18 +542,23 @@ fn pause_gates_state_changing_operations() {
                 &false,
                 &String::from_str(&s.env, "x")
             )
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Paused
     );
     assert_eq!(
         s.client
             .try_submit_transaction(&depositor, &s.escrow_id, &recipient, &5)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Paused
     );
     s.env.ledger().with_mut(|l| l.timestamp += DELAY);
     assert_eq!(
-        s.client.try_execute_transaction(&tx_id).unwrap_err().unwrap(),
+        s.client
+            .try_execute_transaction(&tx_id)
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Paused
     );
 
@@ -531,7 +566,8 @@ fn pause_gates_state_changing_operations() {
     assert_eq!(
         s.client
             .try_pause(&s.signers.get_unchecked(0))
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
 
@@ -549,7 +585,8 @@ fn signer_management_updates_threshold_bounds() {
     assert_eq!(
         s.client
             .try_add_signer(&s.admin, &s.signers.get_unchecked(0))
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::AlreadySigner
     );
 
@@ -557,12 +594,27 @@ fn signer_management_updates_threshold_bounds() {
     assert!(s.client.is_signer_public(&newcomer));
     assert_eq!(s.client.get_signers().len(), 4);
 
-    // Raise the threshold to 3, then remove two of the original signers;
-    // the threshold is lowered automatically as the signer count shrinks.
+    // Raise the threshold to 3, then remove one of the original signers:
+    // signer_count drops to 3, exactly matching the threshold.
     s.client.set_threshold(&s.admin, &3);
     let first = s.signers.get_unchecked(0);
     let second = s.signers.get_unchecked(1);
     s.client.remove_signer(&s.admin, &first);
+    assert_eq!(s.client.get_signers().len(), 3);
+
+    // Removal never auto-lowers the threshold (unlike `add_signer`, which
+    // auto-lowers it): a further removal that would bring signer_count to
+    // or below `required_approvals` is refused until the admin explicitly
+    // lowers the threshold first.
+    assert_eq!(
+        s.client
+            .try_remove_signer(&s.admin, &second)
+            .unwrap_err()
+            .unwrap(),
+        EscrowError::ThresholdTooHigh
+    );
+
+    s.client.set_threshold(&s.admin, &2);
     s.client.remove_signer(&s.admin, &second);
     assert_eq!(s.client.get_signers().len(), 2);
     let cfg = s.client.get_config().unwrap();
@@ -574,13 +626,15 @@ fn signer_management_updates_threshold_bounds() {
     assert_eq!(
         s.client
             .try_remove_signer(&s.admin, &third)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::ThresholdTooHigh
     );
     assert_eq!(
         s.client
             .try_remove_signer(&s.admin, &newcomer)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::ThresholdTooHigh
     );
 
@@ -589,7 +643,8 @@ fn signer_management_updates_threshold_bounds() {
     assert_eq!(
         s.client
             .try_remove_signer(&s.admin, &unknown)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::NotASigner
     );
 
@@ -597,7 +652,8 @@ fn signer_management_updates_threshold_bounds() {
     assert_eq!(
         s.client
             .try_add_signer(&third, &Address::generate(&s.env))
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
 }
@@ -611,13 +667,15 @@ fn config_setters_validate_and_persist() {
     assert_eq!(
         s.client
             .try_set_threshold(&s.admin, &0)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
     assert_eq!(
         s.client
             .try_set_threshold(&s.admin, &9)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
 
@@ -628,7 +686,8 @@ fn config_setters_validate_and_persist() {
     assert_eq!(
         s.client
             .try_set_timelock(&s.admin, &0, &0)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
 
@@ -639,7 +698,8 @@ fn config_setters_validate_and_persist() {
     assert_eq!(
         s.client
             .try_set_rate_limit(&s.admin, &0, &0)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InvalidParam
     );
 
@@ -648,19 +708,22 @@ fn config_setters_validate_and_persist() {
     assert_eq!(
         s.client
             .try_set_timelock(&non_admin, &1, &1)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
     assert_eq!(
         s.client
             .try_set_rate_limit(&non_admin, &1, &1)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
     assert_eq!(
         s.client
             .try_set_threshold(&non_admin, &1)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
 }
@@ -708,7 +771,8 @@ fn access_control_role_grants_admin_rights() {
     assert_eq!(
         client
             .try_set_timelock(&nobody, &1, &1)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::Unauthorized
     );
     let _ = token_id;
@@ -724,7 +788,8 @@ fn close_escrow_blocks_future_deposits() {
     assert_eq!(
         s.client
             .try_deposit(&s.escrow_id, &depositor, &10)
-            .unwrap_err().unwrap(),
+            .unwrap_err()
+            .unwrap(),
         EscrowError::InactiveEscrow
     );
 }
